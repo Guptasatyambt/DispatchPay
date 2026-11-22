@@ -1,0 +1,14 @@
+dispatchpay:
+  scheduling:
+    enabled: false
+  outbox:
+    max-attempts: 3
+    initial-backoff: 1m
+  auth:
+    jwt:
+      secret: test-only-jwt-secret-0123456789abcdef
+    otp:
+      pepper: test-only-otp-pepper-0123456789abcdef
+      limits:
+        request-per-ip: { limit: 10, window: 1h }
+        verify-per-ip: { limit: 50, window: 1h }

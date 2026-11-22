@@ -1,0 +1,12 @@
+# Local development against the compose.yaml stack.
+# Values come from the git-ignored .env file (see .env.example).
+spring:
+  config:
+    import: optional:file:.env[.properties]
+  datasource:
+    url: jdbc:postgresql://localhost:${DB_PORT:5432}/${DB_NAME:dispatchpay}
+    username: ${DB_USERNAME:dispatchpay}
+
+logging:
+  level:
+    org.myorg.dispatchpay: DEBUG
