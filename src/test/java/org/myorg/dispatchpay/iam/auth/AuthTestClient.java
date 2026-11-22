@@ -39,6 +39,18 @@ final class AuthTestClient {
         return post("/v1/auth/token/refresh", "{\"refreshToken\":\"" + refreshToken + "\"}", DEFAULT_IP);
     }
 
+    ResultActions revokeSessions(JsonNode caller, String body) throws Exception {
+        return mockMvc.perform(MockMvcRequestBuilders.post("/v1/sessions/revoke")
+                .header("Authorization", "Bearer " + caller.get("accessToken").asString())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body));
+    }
+
+    ResultActions whoAmI(JsonNode caller) throws Exception {
+        return mockMvc.perform(MockMvcRequestBuilders.get("/v1/test/whoami")
+                .header("Authorization", "Bearer " + caller.get("accessToken").asString()));
+    }
+
     /** Requests and verifies an OTP; returns the token response. */
     JsonNode signIn(String e164) throws Exception {
         requestOtp(e164);

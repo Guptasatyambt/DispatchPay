@@ -2,6 +2,7 @@ package org.myorg.dispatchpay.iam.auth.session;
 
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -108,6 +109,58 @@ class SessionRepository {
                 .param("reason", reason)
                 .param("id", sessionId)
                 .update();
+    }
+
+    /** Revokes one live session of the user; returns the id if it was revoked by this call. */
+    List<UUID> revokeUserSession(UUID userId, UUID sessionId, String reason, Instant now) {
+        return jdbc.sql("""
+                        UPDATE auth_session SET revoked_at = :now, revoke_reason = :reason
+                        WHERE id = :id AND user_id = :userId AND revoked_at IS NULL AND expires_at > :now
+                        RETURNING id
+                        """)
+                .param("now", Timestamp.from(now))
+                .param("reason", reason)
+                .param("id", sessionId)
+                .param("userId", userId)
+                .query(UUID.class)
+                .list();
+    }
+
+    /** Revokes every live session of the user; returns the ids revoked by this call. */
+    List<UUID> revokeAllUserSessions(UUID userId, String reason, Instant now) {
+        return jdbc.sql("""
+                        UPDATE auth_session SET revoked_at = :now, revoke_reason = :reason
+                        WHERE user_id = :userId AND revoked_at IS NULL AND expires_at > :now
+                        RETURNING id
+                        """)
+                .param("now", Timestamp.from(now))
+                .param("reason", reason)
+                .param("userId", userId)
+                .query(UUID.class)
+                .list();
+    }
+
+    boolean existsForUser(UUID sessionId, UUID userId) {
+        return jdbc.sql("SELECT EXISTS (SELECT 1 FROM auth_session WHERE id = :id AND user_id = :userId)")
+                .param("id", sessionId)
+                .param("userId", userId)
+                .query(Boolean.class)
+                .single();
+    }
+
+    /** True while the session is unrevoked, unexpired and its user is active. */
+    boolean isActive(UUID sessionId, UUID userId, Instant now) {
+        return jdbc.sql("""
+                        SELECT EXISTS (
+                            SELECT 1 FROM auth_session s JOIN user_account u ON u.id = s.user_id
+                            WHERE s.id = :id AND s.user_id = :userId AND s.revoked_at IS NULL
+                              AND s.expires_at > :now AND u.status = 'ACTIVE')
+                        """)
+                .param("id", sessionId)
+                .param("userId", userId)
+                .param("now", Timestamp.from(now))
+                .query(Boolean.class)
+                .single();
     }
 
     private static Instant toInstant(Timestamp timestamp) {

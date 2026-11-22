@@ -38,7 +38,7 @@ public abstract class IntegrationTest {
     void resetState() {
         jdbc.sql("""
                 TRUNCATE idempotency_record, outbox_event, processed_event, rate_limit_bucket,
-                         otp_challenge, refresh_token, auth_session, user_account
+                         otp_challenge, refresh_token, auth_session, business, business_membership, user_account
                 """).update();
         recordingHandler.reset();
         widgetService.reset();

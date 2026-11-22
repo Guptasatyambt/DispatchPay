@@ -7,6 +7,7 @@ import javax.crypto.spec.SecretKeySpec;
 
 import com.nimbusds.jose.jwk.source.ImmutableSecret;
 import org.myorg.dispatchpay.iam.auth.AuthProperties;
+import org.myorg.dispatchpay.iam.auth.session.SessionService;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.oauth2.jose.jws.MacAlgorithm;
@@ -16,7 +17,10 @@ import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
 
-/** HS256 access tokens signed with a secret injected from the environment. */
+/**
+ * HS256 access tokens signed with a secret injected from the environment. Each accepted token is
+ * also checked against its database session, so revocation is immediate.
+ */
 @Configuration(proxyBeanMethods = false)
 class JwtConfig {
 
@@ -26,11 +30,12 @@ class JwtConfig {
     }
 
     @Bean
-    JwtDecoder jwtDecoder(AuthProperties properties) {
+    JwtDecoder jwtDecoder(AuthProperties properties, SessionService sessionService) {
         NimbusJwtDecoder decoder = NimbusJwtDecoder.withSecretKey(secretKey(properties))
                 .macAlgorithm(MacAlgorithm.HS256)
                 .build();
-        decoder.setJwtValidator(JwtValidators.createDefaultWithIssuer(properties.jwt().issuer()));
+        decoder.setJwtValidator(new ActiveSessionValidator(
+                JwtValidators.createDefaultWithIssuer(properties.jwt().issuer()), sessionService));
         return decoder;
     }
 

@@ -26,20 +26,32 @@ Probes: `GET /actuator/health/liveness`, `GET /actuator/health/readiness` (readi
 | `staging` | Shared environment                        | Environment variables only: `DB_URL`, `DB_USERNAME`, `DB_PASSWORD`, `JWT_SECRET`, `OTP_PEPPER`; probes on `MANAGEMENT_PORT` (8081) |
 | `test`    | Automated tests                           | Testcontainers                               |
 
-## Authentication (M01.S01–S02)
+## Authentication (M01.S01–S03)
 
 | Endpoint | Purpose |
 |---|---|
 | `POST /v1/auth/otp/request` `{mobile, deviceId?}` | Always `202` with a generic body for any valid Indian mobile; `429` + `Retry-After` when limited |
 | `POST /v1/auth/otp/verify` `{mobile, code, deviceId?, deviceName?}` | Creates the account on first sign-in, opens a device session, returns tokens |
 | `POST /v1/auth/token/refresh` `{refreshToken}` | Rotates the refresh token; reusing an old one revokes the session |
+| `POST /v1/sessions/revoke` `{scope, sessionId?}` | Authenticated sign-out: `CURRENT` (this device), `SESSION` + `sessionId` (one of your devices; others' are `404`), or `ALL`. Returns `revokedSessionIds`; repeating is a no-op |
 
 - Access token: HS256 JWT, 15 min, claims `sub` (user id) and `sid` (session id) only — no permissions.
+- Every authenticated request checks the token's session in the database, so revoked or expired sessions and disabled accounts get `401` immediately, not after the token expires.
 - Refresh token: opaque 256-bit value, stored as SHA-256, single use, 30-day idle / 90-day absolute session lifetime.
 - OTP: 6 digits, 5 min, 5 attempts, 30 s resend cooldown, stored as HMAC with `OTP_PEPPER`.
 - Limits (fixed windows in PostgreSQL): 3 / 15 min and 10 / day per mobile, 10 / h per device, 30 / h per IP for requests; 60 / h per IP for verify and refresh.
 - SMS: implement `OtpSender` for the real provider. The `dev` profile prints codes to the console; other profiles fail to start without a sender.
 - Behind a proxy, set `server.forward-headers-strategy` so IP limits see the real client address.
+
+## Businesses (M01.S04)
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /v1/businesses` `{name, timezone?}` + `Idempotency-Key` | Any signed-in user registers a business and becomes its owner. `timezone` is an IANA zone (default `Asia/Kolkata`). Returns `201` with the business id, owner `membershipId` and `role: OWNER`; a retry with the same key replays it |
+
+- Ownership is a single required `business.owner_membership_id`, so a business has exactly one owner by construction: no ownerless state, no second owner. Transfer (M01.S13–S14) changes that one column.
+- Database-enforced: the owner must be a membership of the same business (deferred composite FK), one membership owns at most one business, and an active business's owner membership must be `ACTIVE` (deferred constraint trigger). Business and owner membership are inserted in one transaction.
+- Memberships (`business_membership`) are unique per user and business and carry no role; whether a membership is the owner comes from the business row.
 
 ## Platform conventions (M00)
 

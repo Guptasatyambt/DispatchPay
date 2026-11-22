@@ -8,6 +8,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.UUID;
 
 import org.myorg.dispatchpay.iam.auth.AuthProperties;
@@ -36,6 +37,7 @@ public class SessionService {
 
     static final String REVOKED_REFRESH_REUSE = "REFRESH_TOKEN_REUSE";
     static final String REVOKED_ACCOUNT_DISABLED = "ACCOUNT_DISABLED";
+    static final String REVOKED_BY_USER = "USER_REVOKED";
 
     private enum Rejection { INVALID, DISABLED }
 
@@ -113,6 +115,33 @@ public class SessionService {
         sessions.touchSession(locked.sessionId(), now);
         return new RefreshOutcome(issueTokens(locked.userId(), locked.sessionId(), locked.sessionExpiresAt(), now),
                 null);
+    }
+
+    /**
+     * Signs one of the user's devices out. Revoking an already-revoked or expired session of the
+     * user is a no-op; a session the user does not own is reported as not found.
+     */
+    @Transactional
+    public List<UUID> revoke(UUID userId, UUID sessionId) {
+        List<UUID> revoked = sessions.revokeUserSession(userId, sessionId, REVOKED_BY_USER, clock.instant());
+        if (revoked.isEmpty() && !sessions.existsForUser(sessionId, userId)) {
+            throw new ApiException(ErrorCode.NOT_FOUND, "Session not found");
+        }
+        log.info("User {} revoked session(s) {}", userId, revoked);
+        return revoked;
+    }
+
+    /** Signs the user out of every device, including the calling one. */
+    @Transactional
+    public List<UUID> revokeAll(UUID userId) {
+        List<UUID> revoked = sessions.revokeAllUserSessions(userId, REVOKED_BY_USER, clock.instant());
+        log.info("User {} revoked all sessions {}", userId, revoked);
+        return revoked;
+    }
+
+    /** Checked on every authenticated request, so revocation takes effect before the access token expires. */
+    public boolean isActive(UUID sessionId, UUID userId) {
+        return sessions.isActive(sessionId, userId, clock.instant());
     }
 
     private SessionTokens issueTokens(UUID userId, UUID sessionId, Instant sessionExpiresAt, Instant now) {
