@@ -88,6 +88,32 @@ Probes: `GET /actuator/health/liveness`, `GET /actuator/health/readiness` (readi
 - Only membership facts and the invited mobile are exposed: never the user id, other businesses, sessions or devices.
 - A membership id from another business, the owner's own membership, an unknown or malformed id all return the same `404 NOT_FOUND`. Workers get `403 ACCESS_DENIED`.
 
+## Worker access changes (M01.S09, M01.S11, M01.S12)
+
+| Endpoint | Purpose |
+|---|---|
+| `PUT /v1/iam/workers/{id}/permissions` `{permissions[], version}` + `X-Business-Id` + `Idempotency-Key` | Owner only. Replaces the worker's grants with exactly `permissions` (catalog codes only; anything else → `422`). Returns the worker detail with the new `version` |
+| `POST /v1/iam/workers/{id}/suspend` + `X-Business-Id` | Owner only. Suspends the membership in this business; repeating is a no-op. Returns the worker detail |
+| `POST /v1/iam/workers/{id}/reactivate` `{permissions[], version}` + `X-Business-Id` + `Idempotency-Key` | Owner only. Reactivates a suspended worker with exactly the listed (reviewed) grants: grants held before suspension are kept only if listed again. Not suspended → `409 CONFLICT` |
+
+- **Authorization version**: the membership's `version` (shown in the worker detail) increases with every access change, including suspension. A permission change sent with an older `version` → `409 VERSION_CONFLICT`; concurrent changes serialize on the business row and the owner is re-checked under that lock.
+- Access is evaluated from the database on every request (there is no permission cache), so a revoked permission or a suspension blocks the worker's next request, even with an access token issued earlier.
+- Suspension affects only this business: the user's account, sessions and other memberships are untouched. A suspended worker gets `403 MEMBERSHIP_SUSPENDED` here, including when confirming anything prepared before suspension.
+- Every change is audited with its before/after (see below). Not yet implemented: godown assignment M01.S10 (after godowns, M03.S01).
+
+## Audit (M02.S01–S02)
+
+**Writing** — `AuditWriter.append(AuditEvent)` inside the mutation's transaction (it refuses to run without one), so an event exists exactly when its mutation commits.
+
+- An event records: business, `actorType` (`USER`/`SYSTEM`), actor membership, initiator, approver, `source` (`MANUAL`, `VOICE`, `IMPORT`, `SYNC`, `SYSTEM`), `action`, resource type and id, field diff `{field: {before, after}}`, and the request's correlation id. `AuditEvent.manual(...)` covers a member's direct API action.
+- A `SYSTEM` actor never carries a membership (checked in code and by `ck_audit_event_actor`); background work names the user who caused it as initiator instead.
+- Membership references are tenant-safe composite keys: an event can only be attributed to members of its own business.
+- `audit_event` is append-only: `UPDATE` and `DELETE` are refused by trigger.
+- Fields whose names contain `token`, `secret`, `password`, `pepper`, `otp` or `hash` are stored as `[REDACTED]`. Invitations record only the masked mobile.
+- Audited today: `business.create`, `iam.invitation.create`, `iam.invitation.accept`, `iam.worker.permissions.replace`, `iam.worker.suspend`, `iam.worker.reactivate`.
+
+**Reading** — `GET /v1/audit-events` + `X-Business-Id`, requires `AUDIT_READ` (the owner holds it; workers only if granted, else `403`). Newest first, paginated (`page`, `size`), optional `resourceType`, `resourceId`, `from` (inclusive) and `to` (exclusive) ISO-8601 instants; invalid filters → `422`. Only the selected business's history is visible, and sensitive fields are redacted again on read.
+
 ## Platform conventions (M00)
 
 - **Errors**: RFC 9457 `application/problem+json` with `code`, `correlationId`, `timestamp`, and `errors[]` for validation. Codes live in `ErrorCode`; 422 for validation, 409 for conflicts.

@@ -2,8 +2,13 @@ package org.myorg.dispatchpay.iam.business;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.UUID;
 
+import org.myorg.dispatchpay.audit.AuditChange;
+import org.myorg.dispatchpay.audit.AuditEvent;
+import org.myorg.dispatchpay.audit.AuditWriter;
 import org.myorg.dispatchpay.iam.membership.MembershipRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,11 +34,14 @@ public class BusinessService {
 
     private final BusinessRepository businesses;
     private final MembershipRepository memberships;
+    private final AuditWriter audit;
     private final Clock clock;
 
-    public BusinessService(BusinessRepository businesses, MembershipRepository memberships, Clock clock) {
+    public BusinessService(BusinessRepository businesses, MembershipRepository memberships, AuditWriter audit,
+            Clock clock) {
         this.businesses = businesses;
         this.memberships = memberships;
+        this.audit = audit;
         this.clock = clock;
     }
 
@@ -48,6 +56,11 @@ public class BusinessService {
         UUID membershipId = UUID.randomUUID();
         businesses.insert(businessId, name, timezone, membershipId, ownerUserId, now);
         memberships.insert(membershipId, businessId, ownerUserId, MembershipRepository.Status.ACTIVE, now);
+        Map<String, AuditChange> changes = new LinkedHashMap<>();
+        changes.put("name", new AuditChange(null, name));
+        changes.put("timezone", new AuditChange(null, timezone));
+        changes.put("ownerMembershipId", new AuditChange(null, membershipId));
+        audit.append(AuditEvent.manual(businessId, membershipId, "business.create", "business", businessId, changes));
         log.info("User {} created business {}", ownerUserId, businessId);
         return new BusinessCreated(businessId, name, timezone, "ACTIVE", membershipId, "OWNER", now);
     }

@@ -8,8 +8,13 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.UUID;
 
+import org.myorg.dispatchpay.audit.AuditChange;
+import org.myorg.dispatchpay.audit.AuditEvent;
+import org.myorg.dispatchpay.audit.AuditWriter;
 import org.myorg.dispatchpay.iam.access.BusinessAccess;
 import org.myorg.dispatchpay.iam.auth.MobileNumber;
 import org.myorg.dispatchpay.iam.invitation.InvitationRepository.LockedBusiness;
@@ -56,16 +61,19 @@ public class InvitationService {
     private final UserAccountRepository users;
     private final InvitationSender sender;
     private final InvitationProperties properties;
+    private final AuditWriter audit;
     private final Clock clock;
     private final SecureRandom random = new SecureRandom();
 
     public InvitationService(InvitationRepository invitations, MembershipRepository memberships,
-            UserAccountRepository users, InvitationSender sender, InvitationProperties properties, Clock clock) {
+            UserAccountRepository users, InvitationSender sender, InvitationProperties properties, AuditWriter audit,
+            Clock clock) {
         this.invitations = invitations;
         this.memberships = memberships;
         this.users = users;
         this.sender = sender;
         this.properties = properties;
+        this.audit = audit;
         this.clock = clock;
     }
 
@@ -97,6 +105,13 @@ public class InvitationService {
         invitations.supersedePending(access.businessId(), mobile.e164(), now);
         invitations.insert(id, access.businessId(), mobile.e164(), sha256(token), access.membershipId(), now,
                 expiresAt);
+        // Only the masked mobile goes into history; the token never does.
+        Map<String, AuditChange> changes = new LinkedHashMap<>();
+        changes.put("mobile", new AuditChange(null, mobile.masked()));
+        changes.put("status", new AuditChange(null, "PENDING"));
+        changes.put("expiresAt", new AuditChange(null, expiresAt));
+        audit.append(AuditEvent.manual(access.businessId(), access.membershipId(), "iam.invitation.create",
+                "invitation", id, changes));
         log.info("Membership {} invited {} to business {}", access.membershipId(), mobile.masked(),
                 access.businessId());
         return new InvitationCreated(id, access.businessId(), business.name(), mobile.e164(), "PENDING", now,
@@ -145,6 +160,11 @@ public class InvitationService {
         UUID membershipId = UUID.randomUUID();
         memberships.insert(membershipId, invitation.businessId(), userId, MembershipRepository.Status.ACTIVE, now);
         invitations.markAccepted(invitation.id(), membershipId, now);
+        Map<String, AuditChange> changes = new LinkedHashMap<>();
+        changes.put("status", new AuditChange("PENDING", "ACCEPTED"));
+        changes.put("membershipId", new AuditChange(null, membershipId));
+        audit.append(AuditEvent.manual(invitation.businessId(), membershipId, "iam.invitation.accept", "invitation",
+                invitation.id(), changes));
         log.info("User {} accepted invitation {} to business {}", userId, invitation.id(), invitation.businessId());
         return new InvitationAccepted(membershipId, invitation.businessId(), invitation.businessName(),
                 BusinessAccess.Role.WORKER, MembershipRepository.Status.ACTIVE.name());

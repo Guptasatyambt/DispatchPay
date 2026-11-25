@@ -245,8 +245,9 @@ class BusinessIT extends IntegrationTest {
         JsonNode owner = signIn(MOBILE);
         read(create(owner, "key-delete-0001", "{\"name\":\"Shop One\"}"));
 
+        // Refused by the ownership key, or earlier by the audit event that attributes the creation to it.
         assertThatThrownBy(() -> inTransaction(() -> jdbc.sql("DELETE FROM business_membership").update()))
-                .hasStackTraceContaining("fk_business_owner_membership");
+                .hasStackTraceContaining("violates foreign key constraint");
         assertThat(count("business_membership")).isEqualTo(1);
     }
 
