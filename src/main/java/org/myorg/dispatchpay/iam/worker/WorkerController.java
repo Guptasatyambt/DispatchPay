@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.UUID;
 
 import jakarta.validation.Valid;
@@ -57,6 +58,18 @@ public class WorkerController {
         WorkerDetail apply(BusinessAccess access, UUID membershipId, long version, Set<Permission> permissions);
     }
 
+    /**
+     * @param godownIds the complete set of godowns after the change; each must belong to this business
+     * @param version   the worker's authorization version as last read
+     */
+    public record GodownsRequest(
+            @NotNull @Size(max = 500) List<@NotNull UUID> godownIds,
+            @NotNull @PositiveOrZero Long version) {
+    }
+
+    record GodownsPayload(UUID businessId, UUID membershipId, List<UUID> godownIds, long version) {
+    }
+
     private final WorkerService workerService;
     private final IdempotentCommandExecutor idempotentExecutor;
 
@@ -83,6 +96,24 @@ public class WorkerController {
             BusinessAccess access) {
         return applyGrants("iam.workers.permissions.replace", idempotencyKey, id, body, access,
                 workerService::replacePermissions);
+    }
+
+    @PutMapping("/{id}/godowns")
+    ResponseEntity<WorkerDetail> replaceGodowns(
+            @RequestHeader(name = IdempotentCommandExecutor.HEADER, required = false) String idempotencyKey,
+            @PathVariable String id,
+            @Valid @RequestBody GodownsRequest body,
+            BusinessAccess access) {
+        access.requireOwner();
+        UUID membershipId = parse(id);
+        Set<UUID> godownIds = new TreeSet<>(body.godownIds());
+        IdempotentRequest request = new IdempotentRequest("user:" + access.userId(), "iam.workers.godowns.replace",
+                idempotencyKey, new GodownsPayload(access.businessId(), membershipId, List.copyOf(godownIds),
+                        body.version()));
+        return idempotentExecutor
+                .execute(request, WorkerDetail.class,
+                        () -> workerService.replaceGodowns(access, membershipId, body.version(), godownIds))
+                .toResponse(HttpStatus.OK);
     }
 
     @PostMapping("/{id}/suspend")

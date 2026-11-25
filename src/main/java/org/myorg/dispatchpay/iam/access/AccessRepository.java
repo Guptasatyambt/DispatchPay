@@ -63,6 +63,18 @@ class AccessRepository {
                 .list();
     }
 
+    List<UUID> findGodownIds(UUID businessId, UUID membershipId) {
+        return jdbc.sql("""
+                        SELECT godown_id FROM membership_godown
+                        WHERE business_id = :businessId AND membership_id = :membershipId
+                        ORDER BY godown_id
+                        """)
+                .param("businessId", businessId)
+                .param("membershipId", membershipId)
+                .query(UUID.class)
+                .list();
+    }
+
     private static MembershipRow map(ResultSet rs, int rowNum) throws SQLException {
         return new MembershipRow(
                 rs.getObject("membership_id", UUID.class),

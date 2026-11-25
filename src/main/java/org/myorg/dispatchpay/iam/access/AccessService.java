@@ -63,9 +63,14 @@ public class AccessService {
             return new BusinessAccess(businessId, row.membershipId(), userId, role,
                     EnumSet.allOf(Permission.class), GodownScope.ALL);
         }
-        // Godown assignments arrive with M01.S10; until then a worker is scoped to no godown.
         return new BusinessAccess(businessId, row.membershipId(), userId, role,
-                grantedPermissions(businessId, row.membershipId()), GodownScope.NONE);
+                grantedPermissions(businessId, row.membershipId()), godownScope(businessId, row.membershipId()));
+    }
+
+    /** The godowns assigned to a worker membership, sorted. */
+    @Transactional(readOnly = true)
+    public GodownScope godownScope(UUID businessId, UUID membershipId) {
+        return new GodownScope(false, repository.findGodownIds(businessId, membershipId));
     }
 
     /** Permissions granted to a worker membership; unknown stored codes are ignored. */

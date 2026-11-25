@@ -30,7 +30,6 @@ public record BusinessAccess(
     public record GodownScope(boolean all, List<UUID> godownIds) {
 
         public static final GodownScope ALL = new GodownScope(true, List.of());
-        public static final GodownScope NONE = new GodownScope(false, List.of());
 
         public boolean includes(UUID godownId) {
             return all || godownIds.contains(godownId);
@@ -52,6 +51,13 @@ public record BusinessAccess(
     public void require(Permission permission) {
         if (!has(permission)) {
             throw new ApiException(ErrorCode.ACCESS_DENIED, "You do not have permission to perform this action");
+        }
+    }
+
+    /** Denies acting in a godown outside the membership's scope, whatever action permissions it holds. */
+    public void requireGodown(UUID godownId) {
+        if (!godownScope.includes(godownId)) {
+            throw new ApiException(ErrorCode.ACCESS_DENIED, "You do not have access to this godown");
         }
     }
 

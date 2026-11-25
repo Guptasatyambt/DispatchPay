@@ -107,6 +107,36 @@ class WorkerRepository {
         }
     }
 
+    /** The subset of {@code godownIds} that are godowns of this business. */
+    List<UUID> findGodownIds(UUID businessId, Set<UUID> godownIds) {
+        if (godownIds.isEmpty()) {
+            return List.of();
+        }
+        return jdbc.sql("SELECT id FROM godown WHERE business_id = :businessId AND id IN (:ids)")
+                .param("businessId", businessId)
+                .param("ids", godownIds)
+                .query(UUID.class)
+                .list();
+    }
+
+    void replaceGodowns(UUID businessId, UUID membershipId, Set<UUID> godownIds, Instant now) {
+        jdbc.sql("DELETE FROM membership_godown WHERE business_id = :businessId AND membership_id = :id")
+                .param("businessId", businessId)
+                .param("id", membershipId)
+                .update();
+        for (UUID godownId : godownIds) {
+            jdbc.sql("""
+                            INSERT INTO membership_godown (business_id, membership_id, godown_id, created_at)
+                            VALUES (:businessId, :id, :godownId, :now)
+                            """)
+                    .param("businessId", businessId)
+                    .param("id", membershipId)
+                    .param("godownId", godownId)
+                    .param("now", Timestamp.from(now))
+                    .update();
+        }
+    }
+
     /** Sets the status and increments the authorization version. */
     void updateAccess(UUID membershipId, String status, Instant now) {
         jdbc.sql("""

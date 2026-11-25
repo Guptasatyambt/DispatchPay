@@ -6,6 +6,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.UUID;
 
 import org.myorg.dispatchpay.audit.AuditChange;
@@ -142,6 +143,34 @@ public class WorkerService {
         return reload(access.businessId(), membershipId);
     }
 
+    /**
+     * Replaces the godowns the worker may act in with exactly {@code godownIds}, all of which must be
+     * godowns of this business. Runs inside the idempotent command's transaction.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public WorkerDetail replaceGodowns(BusinessAccess access, UUID membershipId, long expectedVersion,
+            Set<UUID> godownIds) {
+        WorkerRow worker = lockForChange(access, membershipId);
+        requireVersion(worker, expectedVersion);
+        Set<UUID> unknown = new TreeSet<>(godownIds);
+        unknown.removeAll(workers.findGodownIds(access.businessId(), godownIds));
+        if (!unknown.isEmpty()) {
+            // Godowns of other businesses are reported exactly like ids that do not exist.
+            throw new ApiException(ErrorCode.VALIDATION_FAILED, "Unknown godowns: "
+                    + String.join(", ", unknown.stream().map(UUID::toString).toList()));
+        }
+        Instant now = clock.instant();
+        List<String> before = accessService.godownScope(access.businessId(), membershipId).godownIds().stream()
+                .map(UUID::toString)
+                .toList();
+        workers.replaceGodowns(access.businessId(), membershipId, godownIds, now);
+        workers.updateAccess(membershipId, worker.status(), now);
+        List<String> after = new TreeSet<>(godownIds).stream().map(UUID::toString).toList();
+        audit.append(AuditEvent.manual(access.businessId(), access.membershipId(), "iam.worker.godowns.replace",
+                RESOURCE, membershipId, Map.of("godownIds", new AuditChange(before, after))));
+        return reload(access.businessId(), membershipId);
+    }
+
     private static void requireVersion(WorkerRow worker, long expectedVersion) {
         if (worker.version() != expectedVersion) {
             throw new ApiException(ErrorCode.VERSION_CONFLICT,
@@ -175,9 +204,8 @@ public class WorkerService {
         List<Permission> permissions = accessService.grantedPermissions(businessId, row.membershipId()).stream()
                 .sorted()
                 .toList();
-        // Godown assignments arrive with M01.S10.
         return new WorkerDetail(row.membershipId(), row.mobile(), row.status(), row.joinedAt(), permissions,
-                GodownScope.NONE, row.version());
+                accessService.godownScope(businessId, row.membershipId()), row.version());
     }
 
     private static ApiException notFound() {

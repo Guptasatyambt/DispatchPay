@@ -60,10 +60,10 @@ Probes: `GET /actuator/health/liveness`, `GET /actuator/health/readiness` (readi
 | `GET /v1/iam/me` | The caller's `userId`, `mobile` and `memberships[]` (`membershipId`, `businessId`, `businessName`, `timezone`, `role` `OWNER`/`WORKER`, `status`), sorted by business name. Suspended memberships are listed so the app can show them; no business needs to be selected |
 | `GET /v1/iam/permissions` + `X-Business-Id` | Effective access in the selected business: `role`, sorted `permissions[]` and `godownScope {all, godownIds}` |
 
-- **Tenant selection**: business-scoped endpoints take the business in the `X-Business-Id` header. Declare a `BusinessAccess` controller parameter to resolve it; use `access.require(Permission.X)` / `access.requireOwner()` and `access.godownScope().includes(id)`.
+- **Tenant selection**: business-scoped endpoints take the business in the `X-Business-Id` header. Declare a `BusinessAccess` controller parameter to resolve it; use `access.require(Permission.X)` / `access.requireOwner()` and `access.requireGodown(id)` (or `access.godownScope().includes(id)`).
 - Missing header → `422 BUSINESS_NOT_SELECTED`; malformed → `422 VALIDATION_FAILED`; a business the caller does not belong to (or that does not exist) → the same `404 NOT_FOUND`; suspended membership → `403 MEMBERSHIP_SUSPENDED` (other businesses stay accessible).
 - Access is read from the database on every request, never from the token, so revoked grants and suspensions apply to the next request.
-- The owner holds the whole `Permission` catalog and every godown. Workers are default-deny: exactly the rows in `membership_permission` (written by M01.S09; codes unknown to the application are ignored). Godown scopes are empty for workers until godowns (M03.S01) and M01.S10. Managing people, grants and ownership is owner-only and not in the grantable catalog.
+- The owner holds the whole `Permission` catalog and every godown. Workers are default-deny: exactly the rows in `membership_permission` (written by M01.S09; codes unknown to the application are ignored). A worker's godown scope is exactly the rows in `membership_godown` (M01.S10). Managing people, grants and ownership is owner-only and not in the grantable catalog.
 
 ## Invitations (M01.S06–S07)
 
@@ -88,18 +88,67 @@ Probes: `GET /actuator/health/liveness`, `GET /actuator/health/readiness` (readi
 - Only membership facts and the invited mobile are exposed: never the user id, other businesses, sessions or devices.
 - A membership id from another business, the owner's own membership, an unknown or malformed id all return the same `404 NOT_FOUND`. Workers get `403 ACCESS_DENIED`.
 
-## Worker access changes (M01.S09, M01.S11, M01.S12)
+## Worker access changes (M01.S09–S12)
 
 | Endpoint | Purpose |
 |---|---|
 | `PUT /v1/iam/workers/{id}/permissions` `{permissions[], version}` + `X-Business-Id` + `Idempotency-Key` | Owner only. Replaces the worker's grants with exactly `permissions` (catalog codes only; anything else → `422`). Returns the worker detail with the new `version` |
+| `PUT /v1/iam/workers/{id}/godowns` `{godownIds[], version}` + `X-Business-Id` + `Idempotency-Key` | Owner only. Replaces the worker's godown scope with exactly `godownIds`. Any id that is not a godown of this business (another tenant's or unknown, reported alike) → `422` and nothing changes; the database also refuses cross-tenant scope rows |
 | `POST /v1/iam/workers/{id}/suspend` + `X-Business-Id` | Owner only. Suspends the membership in this business; repeating is a no-op. Returns the worker detail |
 | `POST /v1/iam/workers/{id}/reactivate` `{permissions[], version}` + `X-Business-Id` + `Idempotency-Key` | Owner only. Reactivates a suspended worker with exactly the listed (reviewed) grants: grants held before suspension are kept only if listed again. Not suspended → `409 CONFLICT` |
 
 - **Authorization version**: the membership's `version` (shown in the worker detail) increases with every access change, including suspension. A permission change sent with an older `version` → `409 VERSION_CONFLICT`; concurrent changes serialize on the business row and the owner is re-checked under that lock.
 - Access is evaluated from the database on every request (there is no permission cache), so a revoked permission or a suspension blocks the worker's next request, even with an access token issued earlier.
 - Suspension affects only this business: the user's account, sessions and other memberships are untouched. A suspended worker gets `403 MEMBERSHIP_SUSPENDED` here, including when confirming anything prepared before suspension.
-- Every change is audited with its before/after (see below). Not yet implemented: godown assignment M01.S10 (after godowns, M03.S01).
+- **Godown scope**: a worker may act only in the godowns assigned to them, whatever action permissions they hold. Operations on a godown call `access.requireGodown(id)` → `403 ACCESS_DENIED` outside scope.
+- Every change is audited with its before/after (see below).
+
+## Godowns (M03.S01)
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /v1/godowns?page=&size=` + `X-Business-Id` | Godowns in the caller's scope (owner: all; worker: assigned ones), by name: `id`, `name`, `createdAt`, `updatedAt`, `version` |
+| `POST /v1/godowns` `{name}` + `X-Business-Id` + `Idempotency-Key` | Requires `GODOWN_MANAGE`. Returns `201` |
+| `PATCH /v1/godowns/{id}` `{name, version}` + `X-Business-Id` + `Idempotency-Key` | Requires `GODOWN_MANAGE` and the godown in scope. Older `version` → `409 VERSION_CONFLICT` |
+
+- Names are unique per business, ignoring case (`409 CONFLICT`).
+- A godown of another business, an unknown or malformed id → `404 NOT_FOUND`; one of this business outside a worker's scope → `403 ACCESS_DENIED`.
+- Godowns are referenced through `(business_id, id)` composite keys, so other tables cannot point at another tenant's godown.
+
+## Products (M03.S02–S04)
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /v1/products?q=&includeInactive=&page=&size=` + `X-Business-Id` | Requires `PRODUCT_READ`. Search by SKU, name or approved alias (case-insensitive, contains; wildcards are literal). Exact matches first, then by name. Each item: `id`, `sku`, `name`, `baseUnit`, `status`, `brand`, `packSize`, `price`, `matchedAliases[]`. Inactive products only with `includeInactive=true` |
+| `GET /v1/products/{id}` + `X-Business-Id` | Requires `PRODUCT_READ`. Any product of the business, active or not, with `aliases[]`, `conversions[]` and `version` |
+| `POST /v1/products` `{sku, name, baseUnit, brand?, packSize?, price?}` + `X-Business-Id` + `Idempotency-Key` | Requires `PRODUCT_MANAGE`. Created `ACTIVE`. `201` |
+| `PATCH /v1/products/{id}` `{sku?, name?, status?, brand?, packSize?, price?, version}` + `X-Business-Id` + `Idempotency-Key` | Requires `PRODUCT_MANAGE`. Omitted fields stay; `null` clears `brand`, `packSize` or `price`; unknown fields → `422`. `status` is `ACTIVE`/`INACTIVE`. Older `version` → `409 VERSION_CONFLICT`; an edit that changes nothing keeps the version |
+| `POST /v1/products/{id}/aliases` `{alias}` + `X-Business-Id` + `Idempotency-Key` | Requires `PRODUCT_MANAGE`. Adds an alias approved by the caller. `201` |
+| `PUT /v1/products/{id}/unit-conversions` `{conversions: [{unit, factor}], version}` + `X-Business-Id` + `Idempotency-Key` | Requires `PRODUCT_MANAGE`. Replaces all conversions; `factor` = base units in one `unit` (e.g. `BOX` = 12 for a `PCS` product) |
+
+- **SKU**: 1–64 of `[A-Za-z0-9._/-]`, unique per business ignoring case (`409 CONFLICT`); another business may use the same SKU.
+- **Brand** (≤ 120 chars) and **pack size** (≤ 60 chars, free text such as `500 g` or `Pack of 6`) are optional and help tell similar products apart. **Price** is optional: the selling price of one base unit in integer paise (`2800` = ₹28.00), 0 to 10¹²; decimals → `422`.
+- **Units**: `PCS`, `PAIR`, `DOZEN`, `G`, `KG`, `QUINTAL`, `TONNE`, `ML`, `L`, `M`, `BOX`, `CARTON`, `PACK`, `BAG`, `BUNDLE`, `ROLL`, `BOTTLE`, `CAN`, `SET` (case-insensitive on input). Anything else → `422`.
+- **Stable history**: products are never deleted (deactivate instead) and the base unit never changes (`422`; the database enforces both). Documents should still copy the SKU, name and unit they used.
+- **Aliases**: matched after lower-casing and collapsing whitespace. Unique per product (`409`), but the same alias may be approved for several products, and search then returns every one of them as a candidate — nothing picks one silently.
+- **Conversions** are rejected (`422`, nothing changes) when: the unit is the base unit; the factor is not positive; it has more than 6 decimals or 13 integer digits; a unit is listed twice; or both units are standard units of one dimension and the factor contradicts the fixed ratio (a `KG` product's `G` is `0.001`, a `PCS` product's `DOZEN` is `12`, a `DOZEN` product's `PCS` is `0.083333`). Packaging units take any valid factor. Factors are `NUMERIC(19,6)` and returned without trailing zeros.
+- Products, aliases and conversions are tenant-scoped through composite keys; another business's product → `404`.
+
+## Customers (M03.S05–S07)
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /v1/customers?q=&page=&size=` + `X-Business-Id` | Requires `CUSTOMER_READ`. Search by username, name, phone or approved alias (case- and spacing-insensitive, contains). Exact username, name or alias matches first, then by name. Each item: `id`, `username`, `name`, `contactPerson`, `phone`, `matchedAliases[]` |
+| `GET /v1/customers/{id}` + `X-Business-Id` | Requires `CUSTOMER_READ`. Contacts, `credit`, `aliases[]`, `createdByMembershipId`, `updatedByMembershipId`, timestamps and `version` |
+| `POST /v1/customers` `{username, name, contactPerson?, phone?, address?, paymentTermsDays?, creditLimit?}` + `X-Business-Id` + `Idempotency-Key` | Requires `CUSTOMER_MANAGE`. `201` |
+| `PATCH /v1/customers/{id}` `{…, version}` + `X-Business-Id` + `Idempotency-Key` | Requires `CUSTOMER_MANAGE`. Omitted fields stay; `null` clears any field except `username` and `name`; unknown fields → `422`. Older `version` → `409 VERSION_CONFLICT` |
+| `POST /v1/customers/{id}/aliases` `{alias}` + `X-Business-Id` + `Idempotency-Key` | Requires `CUSTOMER_MANAGE`. Adds an alias explicitly approved by the caller. `201` |
+
+- **Username**: required, 3–40 of `[A-Za-z0-9._-]` starting with a letter or digit, stored lower-case. Unique within the business ignoring case (`409 CONFLICT`, also enforced by the database); another business may use the same username. It can be changed but not cleared. Customers created before it existed were given `c-` + their id.
+- **Receivables fields**: `credit {paymentTermsDays, creditLimit}` is returned only to holders of `CUSTOMER_RECEIVABLES_READ` (otherwise `credit` is `null`), and setting either field needs that permission too (`403`). `paymentTermsDays` is 0–365 (0 = cash); `creditLimit` is in paise, `null` = no limit set.
+- **Attribution**: every customer records the member who created it and who last changed it; each change is also audited with its diff.
+- **Never merged**: names (unlike usernames) are not unique; similar or identical names stay separate customers and no alias is created automatically. An alias is unique per customer (`409`) but may be approved for several customers; search then returns every plausible match.
+- `phone` is 6–20 digits with an optional leading `+`, spaces or `-`. Another business's customer → `404`; search never returns another tenant's customers.
 
 ## Audit (M02.S01–S02)
 
@@ -110,7 +159,7 @@ Probes: `GET /actuator/health/liveness`, `GET /actuator/health/readiness` (readi
 - Membership references are tenant-safe composite keys: an event can only be attributed to members of its own business.
 - `audit_event` is append-only: `UPDATE` and `DELETE` are refused by trigger.
 - Fields whose names contain `token`, `secret`, `password`, `pepper`, `otp` or `hash` are stored as `[REDACTED]`. Invitations record only the masked mobile.
-- Audited today: `business.create`, `iam.invitation.create`, `iam.invitation.accept`, `iam.worker.permissions.replace`, `iam.worker.suspend`, `iam.worker.reactivate`.
+- Audited today: `business.create`, `iam.invitation.create`, `iam.invitation.accept`, `iam.worker.permissions.replace`, `iam.worker.godowns.replace`, `iam.worker.suspend`, `iam.worker.reactivate`, `godown.create`, `godown.update`, `product.create`, `product.update`, `product.alias.add`, `product.conversions.replace`, `customer.create`, `customer.update`, `customer.alias.add`.
 
 **Reading** — `GET /v1/audit-events` + `X-Business-Id`, requires `AUDIT_READ` (the owner holds it; workers only if granted, else `403`). Newest first, paginated (`page`, `size`), optional `resourceType`, `resourceId`, `from` (inclusive) and `to` (exclusive) ISO-8601 instants; invalid filters → `422`. Only the selected business's history is visible, and sensitive fields are redacted again on read.
 
