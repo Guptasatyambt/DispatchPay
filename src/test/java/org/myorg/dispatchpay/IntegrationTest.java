@@ -1,6 +1,7 @@
 package org.myorg.dispatchpay;
 
 import org.junit.jupiter.api.BeforeEach;
+import org.myorg.dispatchpay.support.CapturingInvitationSender;
 import org.myorg.dispatchpay.support.CapturingOtpSender;
 import org.myorg.dispatchpay.support.RecordingEventHandler;
 import org.myorg.dispatchpay.support.WidgetService;
@@ -34,15 +35,20 @@ public abstract class IntegrationTest {
     @Autowired
     protected CapturingOtpSender otpSender;
 
+    @Autowired
+    protected CapturingInvitationSender invitationSender;
+
     @BeforeEach
     void resetState() {
         jdbc.sql("""
                 TRUNCATE idempotency_record, outbox_event, processed_event, rate_limit_bucket,
-                         otp_challenge, refresh_token, auth_session, business, business_membership, user_account
+                         otp_challenge, refresh_token, auth_session, worker_invitation, membership_permission, business,
+                         business_membership, user_account
                 """).update();
         recordingHandler.reset();
         widgetService.reset();
         otpSender.reset();
+        invitationSender.reset();
     }
 
     protected long count(String table) {

@@ -53,6 +53,41 @@ Probes: `GET /actuator/health/liveness`, `GET /actuator/health/readiness` (readi
 - Database-enforced: the owner must be a membership of the same business (deferred composite FK), one membership owns at most one business, and an active business's owner membership must be `ACTIVE` (deferred constraint trigger). Business and owner membership are inserted in one transaction.
 - Memberships (`business_membership`) are unique per user and business and carry no role; whether a membership is the owner comes from the business row.
 
+## Current access (M01.S05)
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /v1/iam/me` | The caller's `userId`, `mobile` and `memberships[]` (`membershipId`, `businessId`, `businessName`, `timezone`, `role` `OWNER`/`WORKER`, `status`), sorted by business name. Suspended memberships are listed so the app can show them; no business needs to be selected |
+| `GET /v1/iam/permissions` + `X-Business-Id` | Effective access in the selected business: `role`, sorted `permissions[]` and `godownScope {all, godownIds}` |
+
+- **Tenant selection**: business-scoped endpoints take the business in the `X-Business-Id` header. Declare a `BusinessAccess` controller parameter to resolve it; use `access.require(Permission.X)` / `access.requireOwner()` and `access.godownScope().includes(id)`.
+- Missing header → `422 BUSINESS_NOT_SELECTED`; malformed → `422 VALIDATION_FAILED`; a business the caller does not belong to (or that does not exist) → the same `404 NOT_FOUND`; suspended membership → `403 MEMBERSHIP_SUSPENDED` (other businesses stay accessible).
+- Access is read from the database on every request, never from the token, so revoked grants and suspensions apply to the next request.
+- The owner holds the whole `Permission` catalog and every godown. Workers are default-deny: exactly the rows in `membership_permission` (written by M01.S09; codes unknown to the application are ignored). Godown scopes are empty for workers until godowns (M03.S01) and M01.S10. Managing people, grants and ownership is owner-only and not in the grantable catalog.
+
+## Invitations (M01.S06–S07)
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /v1/iam/invitations` `{mobile}` + `X-Business-Id` + `Idempotency-Key` | Owner only. Invites a mobile; returns `201` with the invitation `id`, normalized `mobile`, `status: PENDING`, `expiresAt`. The token is **not** in the response |
+| `POST /v1/iam/invitations/accept` `{token}` + `Idempotency-Key` | The signed-in user whose mobile was invited joins as an `ACTIVE` worker with no permissions; returns `201` with `membershipId`, `businessId`, `businessName`, `role: WORKER` |
+
+- Token: 256-bit, URL-safe, stored only as SHA-256, never returned by the API or kept in the idempotency record. It reaches the invitee through `InvitationSender` (SMS adapter, called after commit; the `dev` profile logs it; other profiles fail to start without one). Delivery failures are logged; the owner resends by inviting again.
+- Validity: `dispatchpay.invitation.ttl` (7 days).
+- Re-inviting a mobile supersedes its pending invitation, so only the newest token works (one pending invitation per business and mobile, enforced by a partial unique index). Invitations for one business serialize on the business row, which also re-checks ownership.
+- Invite errors: worker → `403 ACCESS_DENIED`; mobile already a member (including the owner) → `409 ALREADY_MEMBER`.
+- Accept errors: unknown token, or a token for another mobile → `404 NOT_FOUND` (indistinguishable); already accepted → `409 INVITATION_ALREADY_USED`; replaced → `410 INVITATION_SUPERSEDED`; expired → `410 INVITATION_EXPIRED`. A retry with the same `Idempotency-Key` replays the original `201`; acceptances of one token serialize on the invitation row.
+
+## Workers (M01.S08)
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /v1/iam/workers?page=&size=` + `X-Business-Id` | Owner only. Paginated non-owner memberships: `membershipId`, `mobile`, `status`, `joinedAt`, oldest first |
+| `GET /v1/iam/workers/{membershipId}` + `X-Business-Id` | Owner only. The same plus `permissions[]` and `godownScope` |
+
+- Only membership facts and the invited mobile are exposed: never the user id, other businesses, sessions or devices.
+- A membership id from another business, the owner's own membership, an unknown or malformed id all return the same `404 NOT_FOUND`. Workers get `403 ACCESS_DENIED`.
+
 ## Platform conventions (M00)
 
 - **Errors**: RFC 9457 `application/problem+json` with `code`, `correlationId`, `timestamp`, and `errors[]` for validation. Codes live in `ErrorCode`; 422 for validation, 409 for conflicts.

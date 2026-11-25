@@ -25,7 +25,7 @@ public record AuthProperties(@Valid @NotNull Jwt jwt, @Valid @NotNull Session se
 
     /**
      * @param refreshTokenTtl lifetime of each rotated refresh token (idle timeout)
-     * @param maxLifetime     absolute session lifetime; re-login required afterwards
+     * @param maxLifetime     absolute session lifetime; re-login required after wards
      * @param refreshPerIp    refresh attempts allowed per client IP
      */
     public record Session(@NotNull Duration refreshTokenTtl, @NotNull Duration maxLifetime,

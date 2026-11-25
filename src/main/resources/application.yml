@@ -78,6 +78,8 @@ dispatchpay:
         request-per-device: { limit: 10, window: 1h }
         request-per-ip: { limit: 30, window: 1h }
         verify-per-ip: { limit: 60, window: 1h }
+  invitation:
+    ttl: 7d
   idempotency:
     retention: 24h
     cleanup-interval: 1h
