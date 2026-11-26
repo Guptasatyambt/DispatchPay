@@ -40,4 +40,14 @@ public record AuditEvent(
         return new AuditEvent(businessId, AuditActor.user(membershipId), membershipId, null, AuditSource.MANUAL,
                 action, resourceType, resourceId.toString(), changes);
     }
+
+    /**
+     * Background work started by a member (an import, a sync): the system is the actor and the
+     * member who started it is the initiator, so the event never impersonates the member.
+     */
+    public static AuditEvent system(UUID businessId, UUID initiatorMembershipId, AuditSource source, String action,
+            String resourceType, Object resourceId, Map<String, AuditChange> changes) {
+        return new AuditEvent(businessId, AuditActor.system(), initiatorMembershipId, null, source, action,
+                resourceType, resourceId.toString(), changes);
+    }
 }

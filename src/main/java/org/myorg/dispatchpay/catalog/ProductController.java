@@ -51,13 +51,11 @@ import tools.jackson.databind.JsonNode;
 @RequestMapping("/v1/products")
 public class ProductController {
 
-    private static final String SKU = "[A-Za-z0-9][A-Za-z0-9._/-]{0,63}";
-    private static final String SKU_MESSAGE = "sku must be 1-64 letters, digits, '.', '_', '/' or '-'";
-    private static final java.util.regex.Pattern SKU_PATTERN = java.util.regex.Pattern.compile(SKU);
-    private static final int BRAND_MAX = 120;
-    private static final int PACK_SIZE_MAX = 60;
-    /** Upper bound for a price in paise (₹1,000 crore). */
-    private static final long PRICE_MAX = 1_000_000_000_000L;
+    private static final String SKU = ProductRules.SKU;
+    private static final String SKU_MESSAGE = ProductRules.SKU_MESSAGE;
+    private static final int BRAND_MAX = ProductRules.BRAND_MAX;
+    private static final int PACK_SIZE_MAX = ProductRules.PACK_SIZE_MAX;
+    private static final long PRICE_MAX = ProductRules.PRICE_MAX;
     private static final Set<String> PATCH_FIELDS =
             Set.of("sku", "name", "status", "baseUnit", "brand", "packSize", "price", "version");
 
@@ -67,14 +65,14 @@ public class ProductController {
      */
     public record CreateProductRequest(
             @NotBlank @Pattern(regexp = SKU, message = SKU_MESSAGE) String sku,
-            @NotBlank @Size(max = 200) String name,
+            @NotBlank @Size(max = ProductRules.NAME_MAX) String name,
             @NotBlank String baseUnit,
             @Size(max = BRAND_MAX) String brand,
             @Size(max = PACK_SIZE_MAX) String packSize,
             @PositiveOrZero @Max(PRICE_MAX) Long price) {
     }
 
-    public record AddAliasRequest(@NotBlank @Size(max = 120) String alias) {
+    public record AddAliasRequest(@NotBlank @Size(max = ProductRules.ALIAS_MAX) String alias) {
     }
 
     public record ConversionRequest(@NotBlank String unit, @NotNull BigDecimal factor) {
@@ -150,14 +148,14 @@ public class ProductController {
         PatchRequest patch = PatchRequest.of(body, PATCH_FIELDS);
         long version = patch.requiredWholeNumber("version", 0, Long.MAX_VALUE);
         String sku = patch.text("sku", 64);
-        if (sku != null && !SKU_PATTERN.matcher(sku).matches()) {
+        if (sku != null && !ProductRules.SKU_PATTERN.matcher(sku).matches()) {
             throw new ApiException(ErrorCode.VALIDATION_FAILED, SKU_MESSAGE);
         }
         String status = patch.text("status", 16);
         String baseUnit = patch.text("baseUnit", 16);
         ProductChanges changes = new ProductChanges(
                 sku,
-                patch.text("name", 200),
+                patch.text("name", ProductRules.NAME_MAX),
                 status == null ? null : status(status),
                 baseUnit == null ? null : unit(baseUnit, "baseUnit"),
                 patch.optionalText("brand", BRAND_MAX),
@@ -209,11 +207,11 @@ public class ProductController {
     }
 
     private static Unit unit(String raw, String field) {
-        try {
-            return Unit.valueOf(raw.strip().toUpperCase(Locale.ROOT));
-        } catch (IllegalArgumentException e) {
+        Unit unit = ProductRules.unit(raw);
+        if (unit == null) {
             throw new ApiException(ErrorCode.VALIDATION_FAILED, field + " must be one of " + List.of(Unit.values()));
         }
+        return unit;
     }
 
     private static Status status(String raw) {

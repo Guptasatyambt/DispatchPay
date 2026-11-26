@@ -2,7 +2,9 @@ package org.myorg.dispatchpay.godown;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 
@@ -42,6 +44,16 @@ public class GodownService {
         this.godowns = godowns;
         this.audit = audit;
         this.clock = clock;
+    }
+
+    /**
+     * Godown ids of the business by lower-cased name, for the names given (case-insensitive). Godown
+     * names are unique per business ignoring case, so each name finds at most one godown.
+     */
+    @Transactional(readOnly = true)
+    public Map<String, UUID> idsByName(UUID businessId, Collection<String> names) {
+        return godowns.idsByName(businessId,
+                names.stream().map(name -> name.toLowerCase(Locale.ROOT)).distinct().toList());
     }
 
     @Transactional(readOnly = true)

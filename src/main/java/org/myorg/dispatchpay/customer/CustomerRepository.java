@@ -9,6 +9,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -117,6 +118,21 @@ class CustomerRepository {
                 .list().stream()
                 .collect(Collectors.groupingBy(Map.Entry::getKey,
                         Collectors.mapping(Map.Entry::getValue, Collectors.toList())));
+    }
+
+    /** Which of {@code usernames} (lower-case) are taken in the business. */
+    Set<String> takenUsernames(UUID businessId, Collection<String> usernames) {
+        if (usernames.isEmpty()) {
+            return Set.of();
+        }
+        return Set.copyOf(jdbc.sql("""
+                        SELECT lower(username) FROM customer
+                        WHERE business_id = :businessId AND lower(username) IN (:usernames)
+                        """)
+                .param("businessId", businessId)
+                .param("usernames", usernames)
+                .query(String.class)
+                .list());
     }
 
     boolean usernameTaken(UUID businessId, String username, UUID exceptId) {

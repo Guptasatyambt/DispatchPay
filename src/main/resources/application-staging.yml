@@ -1,5 +1,6 @@
 # Staging: every connection value and secret must be injected by the environment
-# (DB_URL, DB_USERNAME, DB_PASSWORD). There are deliberately no defaults here.
+# (DB_URL, DB_USERNAME, DB_PASSWORD, STORAGE_ENDPOINT, STORAGE_BUCKET, STORAGE_ACCESS_KEY,
+# STORAGE_SECRET_KEY). There are deliberately no defaults here.
 management:
   server:
     # Keep probes off the public port; expose this port only to the orchestrator.

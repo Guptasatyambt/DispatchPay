@@ -10,3 +10,9 @@ spring:
 logging:
   level:
     org.myorg.dispatchpay: DEBUG
+
+dispatchpay:
+  storage:
+    endpoint: http://localhost:${STORAGE_PORT:9000}
+    bucket: ${STORAGE_BUCKET:dispatchpay-dev}
+    create-bucket: true

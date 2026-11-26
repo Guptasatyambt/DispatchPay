@@ -3,15 +3,22 @@ package org.myorg.dispatchpay.catalog;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.EnumMap;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.UUID;
 
 import org.myorg.dispatchpay.audit.AuditChange;
 import org.myorg.dispatchpay.audit.AuditEvent;
+import org.myorg.dispatchpay.audit.AuditSource;
 import org.myorg.dispatchpay.audit.AuditWriter;
 import org.myorg.dispatchpay.catalog.ProductRepository.ConversionRow;
 import org.myorg.dispatchpay.catalog.ProductRepository.Fields;
@@ -40,7 +47,6 @@ import org.springframework.transaction.annotation.Transactional;
 public class ProductService {
 
     private static final String RESOURCE = "product";
-    private static final int MAX_INTEGER_DIGITS = 13;
 
     public enum Status {
         ACTIVE, INACTIVE
@@ -261,6 +267,84 @@ public class ProductService {
         return reload(access.businessId(), id);
     }
 
+    // --- M04 imports ------------------------------------------------------------------------------
+
+    /** A product as an import creates it, with its approved aliases and conversions. */
+    public record ImportedProduct(NewProduct product, List<String> aliases, Map<Unit, BigDecimal> conversions) {
+    }
+
+    /** What stock rows need to know about a product: identity, lifecycle and the units it counts in. */
+    public record StockProduct(UUID id, String sku, Status status, Unit baseUnit, Map<Unit, BigDecimal> conversions) {
+    }
+
+    /** Which of the SKUs are already used in the business, lower-cased. */
+    @Transactional(readOnly = true)
+    public Set<String> takenSkus(UUID businessId, Collection<String> skus) {
+        return products.takenSkus(businessId, lowerCase(skus));
+    }
+
+    /** Products with the given SKUs, keyed by lower-cased SKU. */
+    @Transactional(readOnly = true)
+    public Map<String, StockProduct> findBySkus(UUID businessId, Collection<String> skus) {
+        List<ProductRow> rows = products.findBySkus(businessId, lowerCase(skus));
+        Map<UUID, List<ConversionRow>> conversions = products.findConversions(businessId,
+                rows.stream().map(ProductRow::id).toList());
+        Map<String, StockProduct> found = new HashMap<>();
+        for (ProductRow row : rows) {
+            Map<Unit, BigDecimal> units = new EnumMap<>(Unit.class);
+            conversions.getOrDefault(row.id(), List.of())
+                    .forEach(conversion -> units.put(Unit.valueOf(conversion.unit()), plain(conversion.factor())));
+            found.put(row.sku().toLowerCase(Locale.ROOT), new StockProduct(row.id(), row.sku(),
+                    Status.valueOf(row.status()), Unit.valueOf(row.baseUnit()), units));
+        }
+        return found;
+    }
+
+    /**
+     * Creates an imported product, active, with its aliases approved by the member who committed the
+     * import. The import validated it already; rules are checked again here. Audited as system work
+     * initiated by that member. Runs inside the import's commit transaction.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public UUID createImported(UUID businessId, UUID initiatorMembershipId, ImportedProduct imported) {
+        NewProduct product = imported.product();
+        Map<Unit, BigDecimal> conversions = new TreeMap<>();
+        imported.conversions().forEach((unit, factor) ->
+                conversions.put(unit, validFactor(product.baseUnit(), unit, factor)));
+        UUID id = UUID.randomUUID();
+        requireUniqueSku(businessId, product.sku(), id);
+        Instant now = clock.instant();
+        Fields fields = new Fields(product.sku(), product.name(), Status.ACTIVE.name(), product.brand(),
+                product.packSize(), product.price());
+        products.insert(id, businessId, product.baseUnit(), fields, now);
+        List<String> aliases = new ArrayList<>();
+        for (String alias : imported.aliases()) {
+            products.insertAlias(UUID.randomUUID(), businessId, id, alias, SearchText.normalize(alias),
+                    initiatorMembershipId, now);
+            aliases.add(alias);
+        }
+        products.replaceConversions(businessId, id, conversions, now);
+
+        Map<String, AuditChange> changes = new LinkedHashMap<>();
+        changes.put("baseUnit", new AuditChange(null, product.baseUnit().name()));
+        changes.putAll(diff(new Fields(null, null, null, null, null, null), fields));
+        if (!aliases.isEmpty()) {
+            changes.put("aliases", new AuditChange(null, aliases));
+        }
+        if (!conversions.isEmpty()) {
+            Map<String, String> after = new TreeMap<>();
+            conversions.forEach((unit, factor) -> after.put(unit.name(), factor.toPlainString()));
+            changes.put("conversions", new AuditChange(null, after));
+        }
+        audit.append(AuditEvent.system(businessId, initiatorMembershipId, AuditSource.IMPORT, "product.create",
+                RESOURCE, id, changes));
+        return id;
+    }
+
+    private static List<String> lowerCase(Collection<String> values) {
+        return values.stream().map(value -> value.toLowerCase(Locale.ROOT)).distinct().toList();
+    }
+
     // --- helpers ----------------------------------------------------------------------------------
 
     /** The fields that differ, in a stable order, for the audit diff. */
@@ -282,22 +366,11 @@ public class ProductService {
     }
 
     private static BigDecimal validFactor(Unit base, Unit unit, BigDecimal raw) {
-        if (unit == base) {
-            throw invalidConversion(unit + " is the base unit and cannot have a conversion");
+        String problem = ProductRules.conversionProblem(base, unit, raw);
+        if (problem != null) {
+            throw invalidConversion(problem);
         }
-        if (raw == null || raw.signum() <= 0) {
-            throw invalidConversion("The factor for " + unit + " must be greater than zero");
-        }
-        BigDecimal factor = plain(raw);
-        if (factor.scale() > Unit.SCALE || factor.precision() - factor.scale() > MAX_INTEGER_DIGITS) {
-            throw invalidConversion("The factor for " + unit + " must have at most " + MAX_INTEGER_DIGITS
-                    + " digits before and " + Unit.SCALE + " after the decimal point");
-        }
-        BigDecimal standard = unit.standardFactorTo(base);
-        if (standard != null && factor.compareTo(standard) != 0) {
-            throw invalidConversion("1 " + unit + " is always " + standard.toPlainString() + " " + base);
-        }
-        return factor;
+        return plain(raw);
     }
 
     private ProductRow lockForChange(BusinessAccess access, UUID id, long expectedVersion) {
@@ -335,10 +408,8 @@ public class ProductService {
         return new ConversionView(row.unit(), plain(row.factor()));
     }
 
-    /** Without trailing zeros or exponent notation: 12, 0.5, 0.001. */
     private static BigDecimal plain(BigDecimal value) {
-        BigDecimal stripped = value.stripTrailingZeros();
-        return stripped.scale() < 0 ? stripped.setScale(0) : stripped;
+        return ProductRules.plain(value);
     }
 
     private static ApiException invalidConversion(String detail) {

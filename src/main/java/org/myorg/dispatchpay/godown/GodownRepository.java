@@ -4,9 +4,12 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
@@ -67,6 +70,21 @@ class GodownRepository {
                 .param("exceptId", exceptId)
                 .query(Boolean.class)
                 .single();
+    }
+
+    Map<String, UUID> idsByName(UUID businessId, Collection<String> lowerNames) {
+        if (lowerNames.isEmpty()) {
+            return Map.of();
+        }
+        return jdbc.sql("""
+                        SELECT lower(name) AS name, id FROM godown
+                        WHERE business_id = :businessId AND lower(name) IN (:names)
+                        """)
+                .param("businessId", businessId)
+                .param("names", lowerNames)
+                .query((rs, rowNum) -> Map.entry(rs.getString("name"), rs.getObject("id", UUID.class)))
+                .list().stream()
+                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
     }
 
     void insert(UUID id, UUID businessId, String name, Instant now) {

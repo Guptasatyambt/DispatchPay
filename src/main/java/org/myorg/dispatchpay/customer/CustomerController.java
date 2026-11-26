@@ -1,9 +1,7 @@
 package org.myorg.dispatchpay.customer;
 
-import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
-import java.util.regex.Pattern;
 
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
@@ -44,20 +42,14 @@ import tools.jackson.databind.JsonNode;
 @RequestMapping("/v1/customers")
 public class CustomerController {
 
-    private static final int NAME_MAX = 200;
-    private static final int CONTACT_MAX = 120;
-    private static final int PHONE_MAX = 20;
-    private static final int ADDRESS_MAX = 500;
-    private static final int TERMS_MAX = 365;
-    /** Upper bound for a credit limit in paise (₹1,000 crore). */
-    private static final long CREDIT_LIMIT_MAX = 1_000_000_000_000L;
-    private static final String PHONE = "\\+?[0-9][0-9 -]{5,19}";
-    private static final String PHONE_MESSAGE = "phone must be 6-20 digits, optionally with a leading +, spaces or -";
-    private static final Pattern PHONE_PATTERN = Pattern.compile(PHONE);
-    private static final String USERNAME = "[A-Za-z0-9][A-Za-z0-9._-]{2,39}";
-    private static final String USERNAME_MESSAGE =
-            "username must be 3-40 letters, digits, '.', '_' or '-', starting with a letter or digit";
-    private static final Pattern USERNAME_PATTERN = Pattern.compile(USERNAME);
+    private static final int NAME_MAX = CustomerRules.NAME_MAX;
+    private static final int CONTACT_MAX = CustomerRules.CONTACT_MAX;
+    private static final int PHONE_MAX = CustomerRules.PHONE_MAX;
+    private static final int ADDRESS_MAX = CustomerRules.ADDRESS_MAX;
+    private static final int TERMS_MAX = CustomerRules.TERMS_MAX;
+    private static final long CREDIT_LIMIT_MAX = CustomerRules.CREDIT_LIMIT_MAX;
+    private static final String PHONE = CustomerRules.PHONE;
+    private static final String PHONE_MESSAGE = CustomerRules.PHONE_MESSAGE;
     private static final Set<String> PATCH_FIELDS = Set.of("username", "name", "contactPerson", "phone", "address",
             "paymentTermsDays", "creditLimit", "version");
 
@@ -76,7 +68,7 @@ public class CustomerController {
             @PositiveOrZero @Max(CREDIT_LIMIT_MAX) Long creditLimit) {
     }
 
-    public record AddAliasRequest(@NotBlank @Size(max = 120) String alias) {
+    public record AddAliasRequest(@NotBlank @Size(max = CustomerRules.ALIAS_MAX) String alias) {
     }
 
     /** Idempotency payloads: the business (and customer) are part of the content. */
@@ -138,7 +130,7 @@ public class CustomerController {
         PatchRequest patch = PatchRequest.of(body, PATCH_FIELDS);
         long version = patch.requiredWholeNumber("version", 0, Long.MAX_VALUE);
         Change<String> phone = patch.optionalText("phone", PHONE_MAX);
-        if (phone != null && phone.value() != null && !PHONE_PATTERN.matcher(phone.value()).matches()) {
+        if (phone != null && phone.value() != null && !CustomerRules.PHONE_PATTERN.matcher(phone.value()).matches()) {
             throw new ApiException(ErrorCode.VALIDATION_FAILED, PHONE_MESSAGE);
         }
         Change<Long> terms = patch.optionalWholeNumber("paymentTermsDays", 0, TERMS_MAX);
@@ -176,11 +168,11 @@ public class CustomerController {
 
     /** Validated and lower-cased, so uniqueness ignores case. */
     private static String username(String raw) {
-        String username = raw.strip();
-        if (!USERNAME_PATTERN.matcher(username).matches()) {
-            throw new ApiException(ErrorCode.VALIDATION_FAILED, USERNAME_MESSAGE);
+        String username = CustomerRules.username(raw);
+        if (username == null) {
+            throw new ApiException(ErrorCode.VALIDATION_FAILED, CustomerRules.USERNAME_MESSAGE);
         }
-        return username.toLowerCase(Locale.ROOT);
+        return username;
     }
 
     private static String blankToNull(String value) {

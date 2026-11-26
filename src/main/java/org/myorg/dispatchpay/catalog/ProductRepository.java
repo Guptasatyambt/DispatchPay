@@ -10,6 +10,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -153,6 +154,51 @@ class ProductRepository {
                 .param("exceptId", exceptId)
                 .query(Boolean.class)
                 .single();
+    }
+
+    /** Which of {@code lowerSkus} (lower-cased) are taken in the business, lower-cased. */
+    Set<String> takenSkus(UUID businessId, Collection<String> lowerSkus) {
+        if (lowerSkus.isEmpty()) {
+            return Set.of();
+        }
+        return Set.copyOf(jdbc.sql("""
+                        SELECT lower(sku) FROM product WHERE business_id = :businessId AND lower(sku) IN (:skus)
+                        """)
+                .param("businessId", businessId)
+                .param("skus", lowerSkus)
+                .query(String.class)
+                .list());
+    }
+
+    /** Products whose lower-cased SKU is one of {@code lowerSkus}. */
+    List<ProductRow> findBySkus(UUID businessId, Collection<String> lowerSkus) {
+        if (lowerSkus.isEmpty()) {
+            return List.of();
+        }
+        return jdbc.sql(SELECT + " WHERE p.business_id = :businessId AND lower(p.sku) IN (:skus)")
+                .param("businessId", businessId)
+                .param("skus", lowerSkus)
+                .query(ProductRepository::map)
+                .list();
+    }
+
+    /** Conversions of the given products, by product. */
+    Map<UUID, List<ConversionRow>> findConversions(UUID businessId, Collection<UUID> productIds) {
+        if (productIds.isEmpty()) {
+            return Map.of();
+        }
+        return jdbc.sql("""
+                        SELECT product_id, unit, factor FROM product_unit_conversion
+                        WHERE business_id = :businessId AND product_id IN (:ids)
+                        ORDER BY unit
+                        """)
+                .param("businessId", businessId)
+                .param("ids", productIds)
+                .query((rs, rowNum) -> Map.entry(rs.getObject("product_id", UUID.class),
+                        new ConversionRow(rs.getString("unit"), rs.getBigDecimal("factor"))))
+                .list().stream()
+                .collect(Collectors.groupingBy(Map.Entry::getKey,
+                        Collectors.mapping(Map.Entry::getValue, Collectors.toList())));
     }
 
     void insert(UUID id, UUID businessId, Unit baseUnit, Fields fields, Instant now) {

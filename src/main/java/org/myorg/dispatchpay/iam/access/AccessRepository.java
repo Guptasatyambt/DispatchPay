@@ -3,6 +3,7 @@ package org.myorg.dispatchpay.iam.access;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -49,6 +50,22 @@ class AccessRepository {
                 .param("userId", userId)
                 .param("businessId", businessId)
                 .query(AccessRepository::map)
+                .optional();
+    }
+
+    /** A membership of an active business by id, with the user it belongs to. */
+    Optional<Map.Entry<UUID, MembershipRow>> findMembershipById(UUID businessId, UUID membershipId) {
+        return jdbc.sql("""
+                        SELECT m.user_id, m.id AS membership_id, m.status AS membership_status,
+                               b.owner_membership_id = m.id AS owner,
+                               b.id AS business_id, b.name AS business_name, b.timezone
+                        FROM business_membership m
+                        JOIN business b ON b.id = m.business_id
+                        WHERE m.id = :membershipId AND b.id = :businessId AND b.status = 'ACTIVE'
+                        """)
+                .param("membershipId", membershipId)
+                .param("businessId", businessId)
+                .query((rs, rowNum) -> Map.entry(rs.getObject("user_id", UUID.class), map(rs, rowNum)))
                 .optional();
     }
 

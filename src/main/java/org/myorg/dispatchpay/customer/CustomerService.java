@@ -2,14 +2,17 @@ package org.myorg.dispatchpay.customer;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 
 import org.myorg.dispatchpay.audit.AuditChange;
 import org.myorg.dispatchpay.audit.AuditEvent;
+import org.myorg.dispatchpay.audit.AuditSource;
 import org.myorg.dispatchpay.audit.AuditWriter;
 import org.myorg.dispatchpay.customer.CustomerRepository.CustomerRow;
 import org.myorg.dispatchpay.customer.CustomerRepository.Fields;
@@ -220,6 +223,42 @@ public class CustomerService {
         audit.append(AuditEvent.manual(access.businessId(), access.membershipId(), "customer.alias.add", RESOURCE,
                 id, Map.of("alias", new AuditChange(null, alias))));
         return reload(access, id);
+    }
+
+    // --- M04 imports ------------------------------------------------------------------------------
+
+    /** Which of the (lower-case) usernames are already used in the business. */
+    @Transactional(readOnly = true)
+    public Set<String> takenUsernames(UUID businessId, Collection<String> usernames) {
+        return customers.takenUsernames(businessId, usernames);
+    }
+
+    /**
+     * Creates an imported customer, attributed to the member who committed the import, with aliases
+     * approved by that member. The import validated it already, including the receivables
+     * permission for terms and credit. Audited as system work initiated by that member. Runs inside
+     * the import's commit transaction.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public UUID createImported(UUID businessId, UUID initiatorMembershipId, NewCustomer customer,
+            List<String> aliases) {
+        UUID id = UUID.randomUUID();
+        Fields fields = new Fields(customer.username(), customer.name(), customer.contactPerson(), customer.phone(),
+                customer.address(), customer.paymentTermsDays(), customer.creditLimit());
+        requireUniqueUsername(businessId, fields.username(), id);
+        Instant now = clock.instant();
+        customers.insert(id, businessId, fields, initiatorMembershipId, now);
+        for (String alias : aliases) {
+            customers.insertAlias(UUID.randomUUID(), businessId, id, alias, SearchText.normalize(alias),
+                    initiatorMembershipId, now);
+        }
+        Map<String, AuditChange> changes = diff(new Fields(null, null, null, null, null, null, null), fields);
+        if (!aliases.isEmpty()) {
+            changes.put("aliases", new AuditChange(null, List.copyOf(aliases)));
+        }
+        audit.append(AuditEvent.system(businessId, initiatorMembershipId, AuditSource.IMPORT, "customer.create",
+                RESOURCE, id, changes));
+        return id;
     }
 
     // --- helpers ----------------------------------------------------------------------------------

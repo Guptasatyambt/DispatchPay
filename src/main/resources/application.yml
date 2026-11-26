@@ -48,7 +48,7 @@ management:
         liveness:
           include: livenessState
         readiness:
-          include: readinessState,db
+          include: readinessState,db,objectStorage
 
 logging:
   pattern:
@@ -89,3 +89,25 @@ dispatchpay:
     max-attempts: 10
     initial-backoff: 2s
     max-backoff: 10m
+  # Private S3-compatible object storage. Objects are never public: clients only get short-lived
+  # pre-signed URLs for one object.
+  storage:
+    endpoint: ${STORAGE_ENDPOINT}
+    # Host the pre-signed URLs point at, when clients reach storage differently from the server.
+    public-endpoint: ${STORAGE_PUBLIC_ENDPOINT:}
+    region: ${STORAGE_REGION:us-east-1}
+    bucket: ${STORAGE_BUCKET}
+    access-key: ${STORAGE_ACCESS_KEY}
+    secret-key: ${STORAGE_SECRET_KEY}
+    path-style-access: true
+    # Only local stacks create the bucket; real environments provision it.
+    create-bucket: false
+  imports:
+    max-file-size: 2MB
+    max-rows: 5000
+    upload-url-ttl: 15m
+    download-url-ttl: 5m
+    poll-interval: 2s
+    # A worker owns a claimed import this long; a crashed worker's import is picked up again after it.
+    lease: 5m
+    max-attempts: 5

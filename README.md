@@ -5,12 +5,12 @@ Spring Boot 4 / Java 21 modular monolith (Step 1 of the development plan).
 ## Run locally
 
 ```sh
-cp .env.example .env          # set DB_PASSWORD
-docker compose up -d          # PostgreSQL 17
+cp .env.example .env          # set DB_PASSWORD, STORAGE_ACCESS_KEY, STORAGE_SECRET_KEY
+docker compose up -d          # PostgreSQL 17 + MinIO (S3-compatible object storage)
 ./gradlew bootRun             # dev profile is the default; reads .env
 ```
 
-Probes: `GET /actuator/health/liveness`, `GET /actuator/health/readiness` (readiness includes the database).
+Probes: `GET /actuator/health/liveness`, `GET /actuator/health/readiness` (readiness includes the database and the storage bucket). The `dev` profile creates the bucket (`dispatchpay-dev`) when it is missing; the MinIO console is at http://localhost:9001.
 
 ## Tests
 
@@ -23,8 +23,8 @@ Probes: `GET /actuator/health/liveness`, `GET /actuator/health/readiness` (readi
 | Profile   | Purpose                                   | Configuration source                         |
 |-----------|-------------------------------------------|----------------------------------------------|
 | `dev`     | Local development (default)               | `.env` (git-ignored) + `application-dev.yml` |
-| `staging` | Shared environment                        | Environment variables only: `DB_URL`, `DB_USERNAME`, `DB_PASSWORD`, `JWT_SECRET`, `OTP_PEPPER`; probes on `MANAGEMENT_PORT` (8081) |
-| `test`    | Automated tests                           | Testcontainers                               |
+| `staging` | Shared environment                        | Environment variables only: `DB_URL`, `DB_USERNAME`, `DB_PASSWORD`, `JWT_SECRET`, `OTP_PEPPER`, `STORAGE_ENDPOINT`, `STORAGE_BUCKET`, `STORAGE_ACCESS_KEY`, `STORAGE_SECRET_KEY` (optional `STORAGE_REGION`, `STORAGE_PUBLIC_ENDPOINT`); probes on `MANAGEMENT_PORT` (8081). The bucket must already exist |
+| `test`    | Automated tests                           | Testcontainers (PostgreSQL, MinIO)           |
 
 ## Authentication (M01.S01–S03)
 
@@ -150,6 +150,31 @@ Probes: `GET /actuator/health/liveness`, `GET /actuator/health/readiness` (readi
 - **Never merged**: names (unlike usernames) are not unique; similar or identical names stay separate customers and no alias is created automatically. An alias is unique per customer (`409`) but may be approved for several customers; search then returns every plausible match.
 - `phone` is 6–20 digits with an optional leading `+`, spaces or `-`. Another business's customer → `404`; search never returns another tenant's customers.
 
+## Imports (M04.S01–S04)
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /v1/imports` `{type, fileName, sizeBytes}` + `X-Business-Id` + `Idempotency-Key` | Registers an import (`PRODUCTS`, `CUSTOMERS` or `OPENING_STOCK`) and returns `201` with `status: AWAITING_UPLOAD` and `upload {url, method: PUT, headers, expiresAt}` |
+| `PUT <upload.url>` (to object storage, not the API) | Upload the file with exactly the returned `headers` (`content-type: text/csv`, `content-length`). The URL lives 15 min and accepts only the declared size |
+| `POST /v1/imports/{id}/validate` + `Idempotency-Key` | `202`, `status: VALIDATING`. A worker parses the file into staged rows; nothing else changes. Not uploaded yet → `409 FILE_NOT_UPLOADED` |
+| `GET /v1/imports/{id}?page=&size=&errorsOnly=` | Status, `totalRows`, `errorRows`, `failure {code, message}`, `commitAvailable`, and a page of `rows[] {rowNumber, values, errors[], resourceId}` |
+| `POST /v1/imports/{id}/commit` + `Idempotency-Key` | `202`, `status: COMMITTING`. Only a `VALIDATED` import (zero row errors); otherwise `409 CONFLICT`. Opening stock → `409 IMPORT_COMMIT_UNAVAILABLE` |
+| `GET /v1/imports/{id}/errors` | `{url, fileName, expiresAt}`: a 5-minute download link for a CSV of the rows with errors. No row errors → `409` |
+
+- **Lifecycle**: `AWAITING_UPLOAD → VALIDATING → VALIDATED | INVALID`, then `VALIDATED → COMMITTING → COMMITTED | FAILED`. `INVALID`, `COMMITTED` and `FAILED` are final: to retry, fix the file and create a new import.
+- **Access**: every endpoint needs `IMPORT_MANAGE` plus the type's permission — `PRODUCT_MANAGE`, `CUSTOMER_MANAGE` or `STOCK_INWARD` (`403` otherwise). Customer `paymentTermsDays`/`creditLimit` also need `CUSTOMER_RECEIVABLES_READ`; opening-stock godowns must be in the member's scope. Another business's import → `404`.
+- **Files**: CSV only — a `.csv` name without path separators, `text/csv`, UTF-8 (a BOM is fine), at most 2 MB and 5,000 data rows (`dispatchpay.imports.*`). The first row names the columns (any order, case-insensitive); unknown, duplicate or missing required columns reject the file. Blank rows are skipped; row numbers count the header as row 1, as in a spreadsheet.
+- **Columns** (`*` required). Money is integer paise; lists are `|`-separated.
+  - `PRODUCTS`: `sku*, name*, baseUnit*, brand, packSize, price, aliases, conversions` — e.g. `SOAP-01,Lux Soap,PCS,Lux,100 g,2800,lux|lux sabun,BOX=12|CARTON=144`
+  - `CUSTOMERS`: `username*, name*, contactPerson, phone, address, paymentTermsDays, creditLimit, aliases`
+  - `OPENING_STOCK`: `sku*, godown*, quantity*, unit` — godown by name; `unit` defaults to the base unit and otherwise needs a conversion; one row per product and godown
+- **Create only**: an existing SKU or username, or one repeated in the file, is a row error. Values follow exactly the same rules as the API.
+- **Errors**: file problems end validation with `failure.code` `FILE_MISSING`, `FILE_TOO_LARGE`, `FILE_NOT_CSV`, `FILE_ENCODING`, `HEADER_INVALID`, `NO_ROWS` or `TOO_MANY_ROWS`. Row problems give `failure.code: ROW_ERRORS` and per-row `errors[] {column, code, message}` with stable codes (`REQUIRED`, `TOO_LONG`, `INVALID_FORMAT`, `INVALID_NUMBER`, `OUT_OF_RANGE`, `INVALID_UNIT`, `INVALID_CONVERSION`, `DUPLICATE_ALIAS`, `DUPLICATE_IN_FILE`, `ALREADY_EXISTS`, `PERMISSION_REQUIRED`, `UNKNOWN_PRODUCT`, `PRODUCT_INACTIVE`, `UNKNOWN_GODOWN`, `GODOWN_NOT_IN_SCOPE`, `UNIT_NOT_CONVERTIBLE`, `COLUMN_COUNT`).
+- **Commit is all-or-nothing**: the worker re-checks every staged row against current data and the committing member's current access, then creates all of them in one transaction. If anything no longer passes (e.g. a SKU created meanwhile) nothing is written: `FAILED` with `COMMIT_CONFLICT` and the offending rows' errors. Lost access → `ACCESS_REVOKED`. Each committed row records the id it created; retries cannot duplicate.
+- **Workers**: the import's status is the job. Workers claim it with a lease (`FOR UPDATE SKIP LOCKED`), read the file outside any transaction and finish in one transaction only while still holding the lease. A crashed worker's step is taken over when its lease (5 min) expires; a step failing `max-attempts` (5) times ends as `PROCESSING_FAILED`.
+- **Storage**: the bucket is private. The source file is `imports/{businessId}/{importId}/source.csv`; the error report is written next to it on first download. Its cells starting with `= + - @`, tab or CR get a leading `'` so spreadsheets never evaluate them.
+- **Audit**: `import.create`, `import.validate`, `import.commit` (the member), `import.validation.finish`, `import.commit.finish` (system, with the member as initiator). Imported products and customers are audited as `product.create`/`customer.create` with `source: IMPORT`, actor `SYSTEM` and the committing member as initiator; that member is also their creator and the approver of their aliases.
+
 ## Audit (M02.S01–S02)
 
 **Writing** — `AuditWriter.append(AuditEvent)` inside the mutation's transaction (it refuses to run without one), so an event exists exactly when its mutation commits.
@@ -159,7 +184,7 @@ Probes: `GET /actuator/health/liveness`, `GET /actuator/health/readiness` (readi
 - Membership references are tenant-safe composite keys: an event can only be attributed to members of its own business.
 - `audit_event` is append-only: `UPDATE` and `DELETE` are refused by trigger.
 - Fields whose names contain `token`, `secret`, `password`, `pepper`, `otp` or `hash` are stored as `[REDACTED]`. Invitations record only the masked mobile.
-- Audited today: `business.create`, `iam.invitation.create`, `iam.invitation.accept`, `iam.worker.permissions.replace`, `iam.worker.godowns.replace`, `iam.worker.suspend`, `iam.worker.reactivate`, `godown.create`, `godown.update`, `product.create`, `product.update`, `product.alias.add`, `product.conversions.replace`, `customer.create`, `customer.update`, `customer.alias.add`.
+- Audited today: `business.create`, `iam.invitation.create`, `iam.invitation.accept`, `iam.worker.permissions.replace`, `iam.worker.godowns.replace`, `iam.worker.suspend`, `iam.worker.reactivate`, `godown.create`, `godown.update`, `product.create`, `product.update`, `product.alias.add`, `product.conversions.replace`, `customer.create`, `customer.update`, `customer.alias.add`, `import.create`, `import.validate`, `import.validation.finish`, `import.commit`, `import.commit.finish`.
 
 **Reading** — `GET /v1/audit-events` + `X-Business-Id`, requires `AUDIT_READ` (the owner holds it; workers only if granted, else `403`). Newest first, paginated (`page`, `size`), optional `resourceType`, `resourceId`, `from` (inclusive) and `to` (exclusive) ISO-8601 instants; invalid filters → `422`. Only the selected business's history is visible, and sensitive fields are redacted again on read.
 

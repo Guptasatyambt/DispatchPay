@@ -2,6 +2,7 @@ package org.myorg.dispatchpay.iam.access;
 
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -58,6 +59,11 @@ public class AccessService {
         if (!MembershipRepository.Status.ACTIVE.name().equals(row.membershipStatus())) {
             throw new ApiException(ErrorCode.MEMBERSHIP_SUSPENDED, "Your access to this business is suspended");
         }
+        return access(userId, row);
+    }
+
+    private BusinessAccess access(UUID userId, MembershipRow row) {
+        UUID businessId = row.businessId();
         Role role = role(row);
         if (role == Role.OWNER) {
             return new BusinessAccess(businessId, row.membershipId(), userId, role,
@@ -65,6 +71,17 @@ public class AccessService {
         }
         return new BusinessAccess(businessId, row.membershipId(), userId, role,
                 grantedPermissions(businessId, row.membershipId()), godownScope(businessId, row.membershipId()));
+    }
+
+    /**
+     * The current access of a membership, for background work that acts on a member's behalf and
+     * must re-check it: empty when the membership is suspended or the business is not active.
+     */
+    @Transactional(readOnly = true)
+    public Optional<BusinessAccess> resolveMembership(UUID businessId, UUID membershipId) {
+        return repository.findMembershipById(businessId, membershipId)
+                .filter(found -> MembershipRepository.Status.ACTIVE.name().equals(found.getValue().membershipStatus()))
+                .map(found -> access(found.getKey(), found.getValue()));
     }
 
     /** The godowns assigned to a worker membership, sorted. */
