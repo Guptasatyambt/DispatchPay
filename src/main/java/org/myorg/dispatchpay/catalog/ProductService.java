@@ -286,16 +286,31 @@ public class ProductService {
     /** Products with the given SKUs, keyed by lower-cased SKU. */
     @Transactional(readOnly = true)
     public Map<String, StockProduct> findBySkus(UUID businessId, Collection<String> skus) {
-        List<ProductRow> rows = products.findBySkus(businessId, lowerCase(skus));
+        Map<String, StockProduct> found = new HashMap<>();
+        stockProducts(businessId, products.findBySkus(businessId, lowerCase(skus)))
+                .forEach(product -> found.put(product.sku().toLowerCase(Locale.ROOT), product));
+        return found;
+    }
+
+    /** Products of the business with the given ids, by id; ids of other businesses are not found. */
+    @Transactional(readOnly = true)
+    public Map<UUID, StockProduct> findByIds(UUID businessId, Collection<UUID> ids) {
+        Map<UUID, StockProduct> found = new HashMap<>();
+        stockProducts(businessId, products.findByIds(businessId, ids))
+                .forEach(product -> found.put(product.id(), product));
+        return found;
+    }
+
+    private List<StockProduct> stockProducts(UUID businessId, List<ProductRow> rows) {
         Map<UUID, List<ConversionRow>> conversions = products.findConversions(businessId,
                 rows.stream().map(ProductRow::id).toList());
-        Map<String, StockProduct> found = new HashMap<>();
+        List<StockProduct> found = new ArrayList<>();
         for (ProductRow row : rows) {
             Map<Unit, BigDecimal> units = new EnumMap<>(Unit.class);
             conversions.getOrDefault(row.id(), List.of())
                     .forEach(conversion -> units.put(Unit.valueOf(conversion.unit()), plain(conversion.factor())));
-            found.put(row.sku().toLowerCase(Locale.ROOT), new StockProduct(row.id(), row.sku(),
-                    Status.valueOf(row.status()), Unit.valueOf(row.baseUnit()), units));
+            found.add(new StockProduct(row.id(), row.sku(), Status.valueOf(row.status()),
+                    Unit.valueOf(row.baseUnit()), units));
         }
         return found;
     }

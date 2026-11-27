@@ -6,6 +6,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 import org.myorg.dispatchpay.audit.AuditChange;
@@ -54,6 +55,12 @@ public class GodownService {
     public Map<String, UUID> idsByName(UUID businessId, Collection<String> names) {
         return godowns.idsByName(businessId,
                 names.stream().map(name -> name.toLowerCase(Locale.ROOT)).distinct().toList());
+    }
+
+    /** The name of a godown of the business; empty for an unknown id or another business's godown. */
+    @Transactional(readOnly = true)
+    public Optional<String> findName(UUID businessId, UUID id) {
+        return godowns.find(businessId, id).map(GodownRow::name);
     }
 
     @Transactional(readOnly = true)

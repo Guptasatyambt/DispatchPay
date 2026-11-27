@@ -167,7 +167,7 @@ class ImportProcessor {
                             + " validation; nothing was imported", initiator);
             return;
         }
-        List<UUID> created = rowRules.commit(access.get(), rows);
+        List<UUID> created = rowRules.commit(access.get(), job.id(), rows);
         imports.recordResources(job.id(), rowNumbers, created);
         finish(job, ImportStatus.COMMITTED, rows.size(), 0, null, null, initiator);
         log.info("Import {} committed {} {} rows", job.id(), created.size(), job.type());

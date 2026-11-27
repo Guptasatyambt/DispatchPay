@@ -74,7 +74,7 @@ class CustomerRows implements RowRules {
     }
 
     @Override
-    public List<UUID> commit(BusinessAccess access, List<Row> rows) {
+    public List<UUID> commit(BusinessAccess access, UUID importId, List<Row> rows) {
         List<UUID> ids = new ArrayList<>();
         for (Row row : rows) {
             Parsed parsed = parse(new RowReader(row.values()), access);

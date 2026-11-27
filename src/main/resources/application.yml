@@ -111,3 +111,6 @@ dispatchpay:
     # A worker owns a claimed import this long; a crashed worker's import is picked up again after it.
     lease: 5m
     max-attempts: 5
+  stock:
+    # Compares every balance with its movements; variances are recorded, logged and counted, never fixed.
+    reconciliation-interval: 1h

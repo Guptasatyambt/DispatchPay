@@ -199,7 +199,7 @@ public class ImportService {
         JobRow job = lockForStep(access, id);
         if (!job.type().committable()) {
             throw new ApiException(ErrorCode.IMPORT_COMMIT_UNAVAILABLE,
-                    "Opening stock imports can be validated but not committed until stock tracking is available");
+                    "Imports of this type can be validated but not committed yet");
         }
         if (job.status() != ImportStatus.VALIDATED) {
             throw new ApiException(ErrorCode.CONFLICT, switch (job.status()) {

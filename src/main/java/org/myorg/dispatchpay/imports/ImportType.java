@@ -21,8 +21,7 @@ public enum ImportType {
                     "aliases"),
             Set.of("username", "name")),
 
-    /** Validated now; committing needs the stock ledger, which does not exist yet. */
-    OPENING_STOCK(Permission.STOCK_INWARD, false,
+    OPENING_STOCK(Permission.STOCK_INWARD, true,
             List.of("sku", "godown", "quantity", "unit"),
             Set.of("sku", "godown", "quantity"));
 

@@ -22,5 +22,6 @@ public record RowError(String column, String code, String message) {
     public static final String UNKNOWN_GODOWN = "UNKNOWN_GODOWN";
     public static final String GODOWN_NOT_IN_SCOPE = "GODOWN_NOT_IN_SCOPE";
     public static final String UNIT_NOT_CONVERTIBLE = "UNIT_NOT_CONVERTIBLE";
+    public static final String STOCK_EXISTS = "STOCK_EXISTS";
     public static final String COLUMN_COUNT = "COLUMN_COUNT";
 }

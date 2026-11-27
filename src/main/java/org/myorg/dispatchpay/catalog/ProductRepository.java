@@ -182,6 +182,17 @@ class ProductRepository {
                 .list();
     }
 
+    List<ProductRow> findByIds(UUID businessId, Collection<UUID> ids) {
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        return jdbc.sql(SELECT + " WHERE p.business_id = :businessId AND p.id IN (:ids)")
+                .param("businessId", businessId)
+                .param("ids", ids)
+                .query(ProductRepository::map)
+                .list();
+    }
+
     /** Conversions of the given products, by product. */
     Map<UUID, List<ConversionRow>> findConversions(UUID businessId, Collection<UUID> productIds) {
         if (productIds.isEmpty()) {

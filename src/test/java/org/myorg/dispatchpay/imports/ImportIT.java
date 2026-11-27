@@ -9,6 +9,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import java.math.BigDecimal;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -399,7 +400,7 @@ class ImportIT extends IntegrationTest {
     }
 
     @Test
-    void openingStockIsValidatedButCannotBeCommittedYet() throws Exception {
+    void openingStockRowsAreValidatedAgainstCatalogGodownsAndScope() throws Exception {
         UUID main = godown("Main Godown");
         godown("Shop");
         UUID soap = product("{\"sku\":\"SOAP-01\",\"name\":\"Lux Soap\",\"baseUnit\":\"PCS\"}");
@@ -436,13 +437,83 @@ class ImportIT extends IntegrationTest {
         assertThat(errorCodes(job, 6)).containsExactly("sku:UNKNOWN_PRODUCT");
         assertThat(errorCodes(job, 7)).containsExactly("quantity:OUT_OF_RANGE");
         assertThat(errorCodes(job, 8)).containsExactly("unit:UNIT_NOT_CONVERTIBLE");
+    }
 
-        UUID valid = validated(owner, "OPENING_STOCK", bytes("sku,godown,quantity\nSOAP-01,Main Godown,2.5\n"));
-        assertThat(get(owner, valid, "").get("status").asString()).isEqualTo("VALIDATED");
-        assertThat(get(owner, valid, "").get("commitAvailable").asBoolean()).isFalse();
-        commit(owner, valid, newKey())
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.code").value("IMPORT_COMMIT_UNAVAILABLE"));
+    @Test
+    void openingStockCommitPostsOneOpeningMovementPerRow() throws Exception {
+        UUID main = godown("Main Godown");
+        UUID shop = godown("Shop");
+        UUID soap = product("{\"sku\":\"SOAP-01\",\"name\":\"Lux Soap\",\"baseUnit\":\"PCS\"}");
+        mockMvc.perform(put("/v1/products/" + soap + "/unit-conversions")
+                        .header("Authorization", bearer(owner))
+                        .header("X-Business-Id", businessId.toString())
+                        .header("Idempotency-Key", newKey())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"conversions\":[{\"unit\":\"BOX\",\"factor\":12}],\"version\":0}"))
+                .andExpect(status().isOk());
+
+        UUID id = validated(owner, "OPENING_STOCK",
+                bytes("sku,godown,quantity,unit\nSOAP-01,Main Godown,2,BOX\nSOAP-01,shop,2.5,\n"));
+        assertThat(get(owner, id, "").get("commitAvailable").asBoolean()).isTrue();
+        commit(owner, id, newKey()).andExpect(status().isAccepted());
+        worker.processPending();
+
+        JsonNode job = get(owner, id, "");
+        assertThat(job.get("status").asString()).isEqualTo("COMMITTED");
+        UUID movement = UUID.fromString(job.at("/rows/items/0/resourceId").asString());
+        assertThat(jdbc.sql("""
+                        SELECT type || ' ' || quantity || ' ' || entered_quantity || ' ' || entered_unit || ' '
+                               || source_type || ' ' || source_line || ' ' || actor_type
+                        FROM stock_movement WHERE id = :id AND source_id = :importId
+                        """)
+                .param("id", movement).param("importId", id).query(String.class).single())
+                .isEqualTo("OPENING 24.000000 2.000000 BOX IMPORT 2 SYSTEM");
+        assertThat(balance(main, soap)).isEqualByComparingTo("24");
+        assertThat(balance(shop, soap)).isEqualByComparingTo("2.5");
+        JsonNode event = iam.read(iam.getScoped(owner, businessId,
+                "/v1/audit-events?resourceType=stock_movement&resourceId=" + movement)).at("/items/0");
+        assertThat(event.get("action").asString()).isEqualTo("stock.opening");
+        assertThat(event.get("source").asString()).isEqualTo("IMPORT");
+        assertThat(event.get("actorType").asString()).isEqualTo("SYSTEM");
+        assertThat(event.get("initiatorMembershipId").asString()).isEqualTo(ownerMembership.toString());
+
+        // Opening stock is only for pairs without movements: a second opening import is refused.
+        UUID again = validated(owner, "OPENING_STOCK", bytes("sku,godown,quantity\nSOAP-01,Main Godown,1\n"));
+        assertThat(errorCodes(get(owner, again, "?errorsOnly=true"), 2)).containsExactly("null:STOCK_EXISTS");
+    }
+
+    @Test
+    void openingStockCommitFailsWholeWhenAPairGainedStockSinceValidation() throws Exception {
+        UUID main = godown("Main Godown");
+        UUID soap = product("{\"sku\":\"SOAP-01\",\"name\":\"Lux Soap\",\"baseUnit\":\"PCS\"}");
+        product("{\"sku\":\"OIL-1L\",\"name\":\"Sunflower Oil\",\"baseUnit\":\"L\"}");
+        UUID id = validated(owner, "OPENING_STOCK",
+                bytes("sku,godown,quantity\nOIL-1L,Main Godown,5\nSOAP-01,Main Godown,10\n"));
+        mockMvc.perform(post("/v1/stock/inwards")
+                        .header("Authorization", bearer(owner))
+                        .header("X-Business-Id", businessId.toString())
+                        .header("Idempotency-Key", newKey())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"godownId\":\"" + main + "\",\"lines\":[{\"productId\":\"" + soap
+                                + "\",\"quantity\":3}]}"))
+                .andExpect(status().isCreated());
+
+        commit(owner, id, newKey()).andExpect(status().isAccepted());
+        worker.processPending();
+
+        JsonNode job = get(owner, id, "?errorsOnly=true");
+        assertThat(job.get("status").asString()).isEqualTo("FAILED");
+        assertThat(job.at("/failure/code").asString()).isEqualTo("COMMIT_CONFLICT");
+        assertThat(errorCodes(job, 3)).containsExactly("null:STOCK_EXISTS");
+        assertThat(count("stock_movement")).isEqualTo(1);
+    }
+
+    private BigDecimal balance(UUID godownId, UUID productId) {
+        return jdbc.sql("SELECT quantity FROM stock_balance WHERE godown_id = :godownId AND product_id = :productId")
+                .param("godownId", godownId)
+                .param("productId", productId)
+                .query(BigDecimal.class)
+                .single();
     }
 
     // --- M04.S04 error report ---------------------------------------------------------------------

@@ -24,7 +24,7 @@ interface RowRules {
 
     /**
      * Creates one record per row, all valid, attributed to {@code access}'s member as initiator.
-     * Runs in the commit transaction; returns the created ids in row order.
+     * Runs in the commit transaction of import {@code importId}; returns the created ids in row order.
      */
-    List<UUID> commit(BusinessAccess access, List<Row> rows);
+    List<UUID> commit(BusinessAccess access, UUID importId, List<Row> rows);
 }
