@@ -7,6 +7,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -223,6 +224,31 @@ public class CustomerService {
         audit.append(AuditEvent.manual(access.businessId(), access.membershipId(), "customer.alias.add", RESOURCE,
                 id, Map.of("alias", new AuditChange(null, alias))));
         return reload(access, id);
+    }
+
+    // --- M06 orders -------------------------------------------------------------------------------
+
+    /** What an order needs to know about its customer; {@code creditLimit} in paise, {@code null} for no limit. */
+    public record OrderCustomer(UUID id, String name, Long creditLimit) {
+    }
+
+    /** The customer of the business, if any; a customer of another business is not found. */
+    @Transactional(readOnly = true)
+    public Optional<OrderCustomer> findForOrder(UUID businessId, UUID id) {
+        return customers.find(businessId, id).map(CustomerService::orderCustomer);
+    }
+
+    /**
+     * Locks the customer until the caller's transaction ends, so the credit checks of concurrent
+     * order confirmations, and changes to the credit limit, happen one at a time.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public Optional<OrderCustomer> lockForOrder(UUID businessId, UUID id) {
+        return customers.lock(businessId, id).map(CustomerService::orderCustomer);
+    }
+
+    private static OrderCustomer orderCustomer(CustomerRow row) {
+        return new OrderCustomer(row.id(), row.fields().name(), row.fields().creditLimit());
     }
 
     // --- M04 imports ------------------------------------------------------------------------------

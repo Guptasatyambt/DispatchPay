@@ -44,7 +44,9 @@ public abstract class IntegrationTest {
                 TRUNCATE idempotency_record, outbox_event, processed_event, rate_limit_bucket,
                          otp_challenge, refresh_token, auth_session, audit_event, worker_invitation,
                          membership_permission, membership_godown, godown, product_unit_conversion,
-                         stock_discrepancy, stock_movement, stock_balance, stock_document,
+                         dispatch_line, dispatch, sales_order_revision, sales_order_cancellation_line,
+                         sales_order_cancellation, sales_order_charge, sales_order_line, sales_order,
+                         sales_order_number, stock_discrepancy, stock_movement, stock_balance, stock_document,
                          product_alias, product, customer_alias, customer, import_row, import_job, business,
                          business_membership, user_account
                 """).update();

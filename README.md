@@ -192,6 +192,28 @@ Probes: `GET /actuator/health/liveness`, `GET /actuator/health/readiness` (readi
 - **Reconciliation**: every `dispatchpay.stock.reconciliation-interval` (1 h) one instance compares each balance with the sum of its movements. A variance opens a `stock_discrepancy` row, is logged at `ERROR` and counted by the `dispatchpay.stock.discrepancies.open` gauge; it is resolved automatically once a later run finds agreement. Nothing is ever rewritten: correct stock through an audited adjustment.
 - **Audit**: `stock.inward`, `stock.opening`, `stock.adjust` per document (resource `stock_document`) with every line's quantities and balance before/after.
 
+## Sales orders (M06.S01–S06)
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /v1/orders` `{customerId, godownId, requestedDate, promisedDate, note, lines[{productId, quantity, unit, unitPrice, discountPercent, taxRate}], charges[{label, amount}]}` + `Idempotency-Key` | `ORDER_CREATE`. `201` with a `DRAFT` order. No stock movement, no receivable |
+| `GET /v1/orders?status=&customerId=&godownId=&requestedFrom=&requestedTo=&q=&cursor=&size=` | `ORDER_READ`. Newest first, `{items, nextCursor}`. `status` comma-separated or repeated; requested dates inclusive; `q` is an order-number prefix |
+| `GET /v1/orders/{id}` | `ORDER_READ`. Lines with ordered/dispatched/cancelled/remaining base quantities and amounts, charges, totals, cancellations, linked dispatches, `revision`, `version` |
+| `PATCH /v1/orders/{id}` `{version, …}` + `Idempotency-Key` | `ORDER_EDIT`. Draft: any field (`lines`/`charges` replace the whole list). Confirmed: only `promisedDate` and `note` (anything else → `409 INVALID_ORDER_STATE`). Stale `version` → `409 VERSION_CONFLICT` |
+| `POST /v1/orders/{id}/confirm` `{version}` + `Idempotency-Key` | `ORDER_CONFIRM`. Prices every line, checks credit, assigns `SO-000001…`, stores revision 1. Confirming a confirmed order returns it unchanged |
+| `POST /v1/orders/{id}/cancel` `{reason, note, lines[{orderLineId, quantity}]}` + `Idempotency-Key` | `ORDER_CANCEL`. Cancels the given undispatched quantities, or everything remaining when `lines` is omitted (drafts: whole only) |
+| `POST /v1/orders/{id}/dispatch-drafts` `{note, lines[{orderLineId, quantity}]}` + `Idempotency-Key` | `DISPATCH_CREATE`. `201` with a `DRAFT` dispatch linked to the order lines; everything remaining when `lines` is omitted |
+
+- **Lifecycle**: `DRAFT → CONFIRMED → PARTIALLY_DISPATCHED → FULFILLED` (the last two are driven by dispatch confirmation, M07). Cancelling everything that remains closes the order: `CANCELLED` if nothing was dispatched, otherwise `FULFILLED`.
+- **Lines**: 1–100, each product once, active products only (`422 PRODUCT_INACTIVE`), any unit the product converts (stored as entered plus base quantity, like the stock ledger). Dates are calendar dates; past dates are allowed.
+- **Money (paise, half-up at each step)**: a line without `unitPrice` uses the product price × unit factor; at confirmation that price is frozen, and a line with no price at all fails confirmation. `amount = unitPrice × quantity`, `discount = amount × discountPercent`, `tax = (amount − discount) × taxRate`; `total = Σ(amount − discount + tax) + charges`. Charges (0–10, untaxed) drop out only when the whole order is cancelled. Amounts use the ordered quantity less cancelled quantity.
+- **Credit**: at confirmation, if the customer has a `creditLimit`, this order's total plus the remaining value (and charges) of their other open orders must not exceed it — `409 CREDIT_LIMIT_EXCEEDED` for everyone, owner included. The customer row is locked, so concurrent confirmations cannot jointly exceed the limit.
+- **Revisions**: confirmation writes `sales_order_revision` 1 (an immutable JSON snapshot); every later edit or cancellation of a confirmed order writes the next one.
+- **Cancellation**: `reason` is `CUSTOMER_REQUEST`, `OUT_OF_STOCK`, `DUPLICATE`, `PRICING` or `OTHER` (`OTHER` needs a `note`). Quantities are in the line's unit and limited to ordered − dispatched − cancelled (`409 QUANTITY_EXCEEDS_REMAINING`); dispatched history is never touched. Open dispatch drafts do not block it.
+- **Dispatch drafts**: quantities are checked against what remains now; other open drafts are not counted, because dispatch confirmation (M07) rechecks every linked line under lock, so competing drafts cannot over-fulfil. A remainder that isn't a whole quantity of the line's unit is drafted (or cancelled) in the base unit.
+- **Scope**: workers see and act on orders of their godowns only; another godown's order → `404`, as a filter → `403`. Another business's customer → `422`, godown → `404`.
+- **Audit**: `order.create`, `order.update`, `order.confirm` (with prices and the credit check), `order.cancel` (resource `sales_order`) and `dispatch.create` (resource `dispatch`).
+
 ## Audit (M02.S01–S02)
 
 **Writing** — `AuditWriter.append(AuditEvent)` inside the mutation's transaction (it refuses to run without one), so an event exists exactly when its mutation commits.

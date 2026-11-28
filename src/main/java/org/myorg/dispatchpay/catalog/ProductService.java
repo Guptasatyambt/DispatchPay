@@ -301,6 +301,24 @@ public class ProductService {
         return found;
     }
 
+    /** What an order line needs to know about a product; {@code price} of one base unit in paise. */
+    public record OrderProduct(StockProduct stock, String name, Long price) {
+    }
+
+    /** Products of the business with the given ids, with name and price, by id. */
+    @Transactional(readOnly = true)
+    public Map<UUID, OrderProduct> findForOrders(UUID businessId, Collection<UUID> ids) {
+        List<ProductRow> rows = products.findByIds(businessId, ids);
+        Map<UUID, ProductRow> byId = new HashMap<>();
+        rows.forEach(row -> byId.put(row.id(), row));
+        Map<UUID, OrderProduct> found = new HashMap<>();
+        stockProducts(businessId, rows).forEach(product -> {
+            ProductRow row = byId.get(product.id());
+            found.put(product.id(), new OrderProduct(product, row.name(), row.price()));
+        });
+        return found;
+    }
+
     private List<StockProduct> stockProducts(UUID businessId, List<ProductRow> rows) {
         Map<UUID, List<ConversionRow>> conversions = products.findConversions(businessId,
                 rows.stream().map(ProductRow::id).toList());
